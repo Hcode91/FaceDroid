@@ -73,9 +73,9 @@ class FaceGLView(context: Context) : GLSurfaceView(context) {
         private var dirty = false
 
         private var program = 0
-        private var vbo = 0
-        private var tex = 0
-        private var vertexCount = 0
+        private var vbos = IntArray(0)
+        private var texs = IntArray(0)
+        private var counts = IntArray(0)
         private val proj = FloatArray(16)
         private val viewM = FloatArray(16)
         private val modelM = FloatArray(16)
@@ -88,11 +88,7 @@ class FaceGLView(context: Context) : GLSurfaceView(context) {
             GLES20.glClearColor(0.1f, 0.1f, 0.12f, 1f)
             GLES20.glEnable(GLES20.GL_DEPTH_TEST)
             program = link(VS, FS)
-            val ids = IntArray(2)
-            GLES20.glGenBuffers(1, ids, 0)
-            GLES20.glGenTextures(1, ids, 1)
-            vbo = ids[0]; tex = ids[1]
-            vertexCount = 0
+            vbos = IntArray(0); texs = IntArray(0); counts = IntArray(0)
             dirty = model != null
         }
 
@@ -104,7 +100,7 @@ class FaceGLView(context: Context) : GLSurfaceView(context) {
         override fun onDrawFrame(gl: GL10?) {
             if (dirty) upload()
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-            if (vertexCount == 0) return
+            if (counts.isEmpty()) return
 
             GLM.setLookAtM(viewM, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
             GLM.setIdentityM(modelM, 0)
@@ -117,15 +113,16 @@ class FaceGLView(context: Context) : GLSurfaceView(context) {
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uMVP"), 1, false, mvp, 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uModel"), 1, false, modelM, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uTex"), 0)
-
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
             val stride = 8 * 4
-            attrib("aPos", 3, stride, 0)
-            attrib("aNormal", 3, stride, 3 * 4)
-            attrib("aUV", 2, stride, 6 * 4)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
+            for (p in counts.indices) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[p])
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbos[p])
+                attrib("aPos", 3, stride, 0)
+                attrib("aNormal", 3, stride, 3 * 4)
+                attrib("aUV", 2, stride, 6 * 4)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, counts[p])
+            }
         }
 
         private fun attrib(name: String, size: Int, stride: Int, offset: Int) {
@@ -138,26 +135,34 @@ class FaceGLView(context: Context) : GLSurfaceView(context) {
         private fun upload() {
             val m = model ?: return
             dirty = false
-            val vb: FloatBuffer = ByteBuffer.allocateDirect(m.data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
-            vb.put(m.data).position(0)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
-            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, m.data.size * 4, vb, GLES20.GL_STATIC_DRAW)
-            vertexCount = m.vertexCount
-
-            var bmp = m.texture ?: Bitmap.createBitmap(intArrayOf(0xFFD8D8D8.toInt()), 1, 1, Bitmap.Config.ARGB_8888)
+            if (vbos.isNotEmpty()) GLES20.glDeleteBuffers(vbos.size, vbos, 0)
+            if (texs.isNotEmpty()) GLES20.glDeleteTextures(texs.size, texs, 0)
+            val n = m.parts.size
+            vbos = IntArray(n).also { GLES20.glGenBuffers(n, it, 0) }
+            texs = IntArray(n).also { GLES20.glGenTextures(n, it, 0) }
+            counts = IntArray(n)
             val maxSize = IntArray(1).also { GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, it, 0) }[0]
-            if (maxSize > 0 && (bmp.width > maxSize || bmp.height > maxSize)) {
-                val s = maxSize.toFloat() / maxOf(bmp.width, bmp.height)
-                bmp = Bitmap.createScaledBitmap(bmp, maxOf(1, (bmp.width * s).toInt()), maxOf(1, (bmp.height * s).toInt()), true)
+            for ((i, part) in m.parts.withIndex()) {
+                val vb: FloatBuffer = ByteBuffer.allocateDirect(part.data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+                vb.put(part.data).position(0)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbos[i])
+                GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, part.data.size * 4, vb, GLES20.GL_STATIC_DRAW)
+                counts[i] = part.vertexCount
+
+                var bmp = part.texture ?: Bitmap.createBitmap(intArrayOf(0xFFD8D8D8.toInt()), 1, 1, Bitmap.Config.ARGB_8888)
+                if (maxSize > 0 && (bmp.width > maxSize || bmp.height > maxSize)) {
+                    val s = maxSize.toFloat() / maxOf(bmp.width, bmp.height)
+                    bmp = Bitmap.createScaledBitmap(bmp, maxOf(1, (bmp.width * s).toInt()), maxOf(1, (bmp.height * s).toInt()), true)
+                }
+                val pot = bmp.width and (bmp.width - 1) == 0 && bmp.height and (bmp.height - 1) == 0
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[i])
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, if (pot) GLES20.GL_LINEAR_MIPMAP_LINEAR else GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, if (pot) GLES20.GL_REPEAT else GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, if (pot) GLES20.GL_REPEAT else GLES20.GL_CLAMP_TO_EDGE)
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+                if (pot) GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
             }
-            val pot = bmp.width and (bmp.width - 1) == 0 && bmp.height and (bmp.height - 1) == 0
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, if (pot) GLES20.GL_LINEAR_MIPMAP_LINEAR else GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, if (pot) GLES20.GL_REPEAT else GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, if (pot) GLES20.GL_REPEAT else GLES20.GL_CLAMP_TO_EDGE)
-            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
-            if (pot) GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
         }
 
         private fun compile(type: Int, src: String): Int {

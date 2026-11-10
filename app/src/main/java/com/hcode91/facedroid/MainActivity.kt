@@ -26,7 +26,7 @@ import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
-    private enum class Mode { PINS, VIEW3D, UV }
+    private enum class Mode { PINS, SIDE, VIEW3D, UV }
 
     private val worker = Executors.newSingleThreadExecutor()
     private var detector: LandmarkDetector? = null
@@ -38,6 +38,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var depthRow: LinearLayout
     private lateinit var meshButton: Button
+    private lateinit var flipButton: Button
+    private lateinit var sideView: PointPinView
+    private var sidePhoto: Bitmap? = null
     private val modeButtons = HashMap<Mode, Button>()
 
     private var photo: Bitmap? = null
@@ -51,6 +54,9 @@ class MainActivity : ComponentActivity() {
 
     private val pickPhoto = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) loadPhoto(uri)
+    }
+    private val pickSide = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) loadSidePhoto(uri)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,14 +78,23 @@ class MainActivity : ComponentActivity() {
             bar.addView(this)
         }
         button("Photo") { pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+        button("Side photo") { pickSide.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
         modeButtons[Mode.PINS] = button("Pins") { setMode(Mode.PINS) }
+        modeButtons[Mode.SIDE] = button("Side pins") { setMode(Mode.SIDE) }
         modeButtons[Mode.VIEW3D] = button("3D") { setMode(Mode.VIEW3D) }
         modeButtons[Mode.UV] = button("UV map") { setMode(Mode.UV) }
         meshButton = button("Mesh: on") {
             pinView.showMesh = !pinView.showMesh
             meshButton.text = if (pinView.showMesh) "Mesh: on" else "Mesh: off"
         }
-        button("Reset pins") { pinView.resetPins() }
+        flipButton = button("Flip side") {
+            val p = sidePhoto ?: return@button
+            sideView.setPoints(SideProfile.flip(sideView.points, p.width))
+        }
+        button("Reset pins") {
+            if (mode == Mode.SIDE) sidePhoto?.let { sideView.setPoints(SideProfile.defaultPoints(it.width, it.height)) }
+            else pinView.resetPins()
+        }
         button("Head: full") {}.apply {
             setOnClickListener {
                 fullHead = !fullHead
@@ -89,6 +104,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         button("Export") { export() }
+        button("Body") { startActivity(Intent(this, BodyActivity::class.java)) }
         button("OBJ viewer") {
             startActivity(Intent(this, ViewerActivity::class.java).apply {
                 if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))
@@ -129,10 +145,15 @@ class MainActivity : ComponentActivity() {
             topology = topo
             onChanged = { builtMesh = null; builtTexture = null }
         }
+        sideView = PointPinView(this).apply {
+            hint = "Tap “Side photo” to add a side-on photo (optional)"
+            onChanged = { builtMesh = null; builtTexture = null }
+        }
         glView = FaceGLView(this)
         uvView = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.rgb(40, 40, 44)) }
         val full = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         stage.addView(pinView, full)
+        stage.addView(sideView, full)
         stage.addView(glView, full)
         stage.addView(uvView, full)
         root.addView(stage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -143,12 +164,14 @@ class MainActivity : ComponentActivity() {
     private fun setMode(m: Mode) {
         mode = m
         pinView.visibility = if (m == Mode.PINS) View.VISIBLE else View.GONE
+        sideView.visibility = if (m == Mode.SIDE) View.VISIBLE else View.GONE
+        flipButton.visibility = if (m == Mode.SIDE) View.VISIBLE else View.GONE
         glView.visibility = if (m == Mode.VIEW3D) View.VISIBLE else View.GONE
         uvView.visibility = if (m == Mode.UV) View.VISIBLE else View.GONE
         depthRow.visibility = if (m == Mode.VIEW3D) View.VISIBLE else View.GONE
         meshButton.visibility = if (m == Mode.PINS) View.VISIBLE else View.GONE
         for ((k, b) in modeButtons) b.alpha = if (k == m) 1f else 0.6f
-        if (m != Mode.PINS) refreshPreview()
+        if (m == Mode.VIEW3D || m == Mode.UV) refreshPreview()
     }
 
     private fun loadPhoto(uri: Uri) {
@@ -179,16 +202,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun decode(uri: Uri): Bitmap {
-        val src = ImageDecoder.createSource(contentResolver, uri)
-        val bmp = ImageDecoder.decodeBitmap(src) { dec, info, _ ->
-            dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            val w = info.size.width
-            val h = info.size.height
-            val scale = minOf(1f, 2048f / maxOf(w, h))
-            if (scale < 1f) dec.setTargetSize((w * scale).toInt(), (h * scale).toInt())
+    private fun decode(uri: Uri): Bitmap = Photos.decode(this, uri)
+
+    private fun loadSidePhoto(uri: Uri) {
+        if (busy) return
+        busy = true
+        status.text = "Loading side photo…"
+        worker.execute {
+            try {
+                val bmp = decode(uri)
+                runOnUiThread {
+                    sidePhoto = bmp
+                    sideView.set(bmp, SideProfile.PINS, SideProfile.defaultPoints(bmp.width, bmp.height), SideProfile.LINES)
+                    builtMesh = null; builtTexture = null
+                    busy = false
+                    status.text = "Drag the pins onto the nose tip, chin, top and back of the head, and the ear. Use “Flip side” if the face points the other way."
+                    setMode(Mode.SIDE)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { status.text = "Couldn't load side photo: ${e.message}"; busy = false }
+            }
         }
-        return if (bmp.config == Bitmap.Config.ARGB_8888) bmp else bmp.copy(Bitmap.Config.ARGB_8888, false)
     }
 
     /** Builds the mesh and bakes the UV texture if anything changed, then calls [done] on the UI thread. */
@@ -205,11 +239,15 @@ class MainActivity : ComponentActivity() {
         val depth = depthScale
         val head = fullHead
         val oldTexture = t
+        val sp = sidePhoto
+        val side = if (head && sp != null && sideView.hasPhoto) FaceMesh.SideInput(sideView.points, sp.width, sp.height) else null
         worker.execute {
             try {
-                val mesh = FaceMesh.build(topo, lmCopy, depth, head)
-                // Depth doesn't change the texture, so keep it if the layout still matches.
-                val tex = if (oldTexture != null && oldTexture.width == mesh.texWidth) oldTexture else TextureBaker.bake(p, mesh)
+                val mesh = FaceMesh.build(topo, lmCopy, depth, head, side)
+                // Depth doesn't change the texture (unless a side photo maps onto the reshaped skull).
+                val tex = if (oldTexture != null && oldTexture.width == mesh.texWidth && side == null) oldTexture
+                    else TextureBaker.bake(p, mesh, if (side != null) sp else null)
+                if (head) { HeadStore.mesh = mesh; HeadStore.texture = tex }
                 runOnUiThread {
                     builtMesh = mesh
                     builtTexture = tex
@@ -226,9 +264,9 @@ class MainActivity : ComponentActivity() {
     private fun refreshPreview() {
         ensureBuilt { mesh, tex ->
             when (mode) {
-                Mode.VIEW3D -> glView.setModel(RenderModel.fromFaceMesh(mesh, tex))
+                Mode.VIEW3D -> glView.setModel(RenderModel.fromParts(listOf(MeshPart.from(mesh, tex))))
                 Mode.UV -> uvView.setImageBitmap(tex)
-                Mode.PINS -> {}
+                else -> {}
             }
         }
     }
@@ -240,8 +278,8 @@ class MainActivity : ComponentActivity() {
             val name = "face_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             worker.execute {
                 val msg = try {
-                    lastExport = ObjExporter.export(this, mesh, tex, name)
-                    "Saved $name.obj, .mtl and .png to Download/${ObjExporter.FOLDER}"
+                    lastExport = ObjExporter.export(this, listOf(MeshPart.from(mesh, tex)), name)
+                    "Saved $name.obj, .mtl and texture to Download/${ObjExporter.FOLDER}"
                 } catch (e: Throwable) {
                     "Export failed: ${e.message}"
                 }

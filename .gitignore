@@ -5,3 +5,4 @@ local.properties
 *.iml
 .kotlin/
 app/src/main/assets/face_landmarker.task
+app/src/main/assets/pose_landmarker_full.task

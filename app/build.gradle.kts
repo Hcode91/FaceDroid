@@ -53,17 +53,22 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// MediaPipe face landmark model (~3.6 MB) is fetched at build time rather than committed.
-val faceModel = file("src/main/assets/face_landmarker.task")
-val downloadFaceModel by tasks.registering {
-    outputs.file(faceModel)
-    onlyIf { !faceModel.exists() }
+// MediaPipe models are fetched at build time rather than committed.
+val models = mapOf(
+    "face_landmarker.task" to "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    "pose_landmarker_full.task" to "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+)
+val downloadModels by tasks.registering {
+    val files = models.keys.map { file("src/main/assets/$it") }
+    outputs.files(files)
+    onlyIf { files.any { !it.exists() } }
     doLast {
-        faceModel.parentFile.mkdirs()
-        val url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-        URI(url).toURL().openStream().use { input ->
-            faceModel.outputStream().use { input.copyTo(it) }
+        for ((name, url) in models) {
+            val f = file("src/main/assets/$name")
+            if (f.exists()) continue
+            f.parentFile.mkdirs()
+            URI(url).toURL().openStream().use { input -> f.outputStream().use { input.copyTo(it) } }
         }
     }
 }
-tasks.named("preBuild") { dependsOn(downloadFaceModel) }
+tasks.named("preBuild") { dependsOn(downloadModels) }

@@ -17,7 +17,10 @@ class FaceMesh(
     val uvs: FloatArray,
     val tris: IntArray,
     val srcPx: FloatArray,
-    val bakeFromPhoto: BooleanArray,
+    /** Per triangle: 0 = fill colour, 1 = front photo, 2 = side photo. */
+    val triView: ByteArray,
+    /** Where each vertex sits in the side photo, if one was used. */
+    val sidePx: FloatArray?,
     val texWidth: Int,
     val texHeight: Int,
     val fullHead: Boolean,
@@ -25,6 +28,9 @@ class FaceMesh(
     val hairSampleX: Float,
     val hairSampleY: Float,
 ) {
+    /** Optional side (profile) photo pins, in side-photo pixels. See [SideProfile]. */
+    class SideInput(val points: FloatArray, val width: Int, val height: Int)
+
     val vertexCount get() = positions.size / 3
     val triCount get() = tris.size / 3
 
@@ -38,7 +44,7 @@ class FaceMesh(
          * Turns pixel landmarks (x, y, z per point) into a 3D mesh.
          * [depthScale] exaggerates or flattens the depth (1 = as detected).
          */
-        fun build(topo: FaceTopology, lm: FloatArray, depthScale: Float = 1f, fullHead: Boolean = true): FaceMesh {
+        fun build(topo: FaceTopology, lm: FloatArray, depthScale: Float = 1f, fullHead: Boolean = true, side: SideInput? = null): FaceMesh {
             val n = FaceTopology.N
             val eyePx = hypot(
                 lm[FaceTopology.R_EYE_OUTER * 3] - lm[FaceTopology.L_EYE_OUTER * 3],
@@ -61,7 +67,7 @@ class FaceMesh(
             if (!fullHead) {
                 return FaceMesh(
                     face, computeNormals(face, topo.tris), topo.uv.copyOf(), topo.tris, faceSrc,
-                    BooleanArray(topo.triCount) { true }, 2048, 2048, false, 0f, 0f
+                    ByteArray(topo.triCount) { 1 }, null, 2048, 2048, false, 0f, 0f
                 )
             }
 
@@ -124,6 +130,10 @@ class FaceMesh(
             topo.tris.copyInto(tris)
             for (i in shellTris.indices) tris[topo.tris.size + i] = shellTris[i]
 
+            // A side photo reshapes the top and back of the skull to match the profile.
+            val sideMap = side?.let { SideProfile.Mapping(it.points, pos) }
+            if (sideMap != null) reshapeFromSide(pos, n, cols, sideMap)
+
             // Where each vertex lands in the photo (front-on projection).
             val src = FloatArray(total * 2)
             faceSrc.copyInto(src)
@@ -131,14 +141,21 @@ class FaceMesh(
                 src[i * 2] = pos[i * 3] * s + cx
                 src[i * 2 + 1] = -pos[i * 3 + 1] * s + cy
             }
+            val sidePx = sideMap?.let { m -> FloatArray(total * 2).also { for (i in 0 until total) m.toPhoto(pos[i * 3 + 1], pos[i * 3 + 2], it, i * 2) } }
 
             val normals = computeNormals(pos, tris)
-            // Only skull triangles that clearly face the camera get photo pixels (e.g. the hairline).
-            val bake = BooleanArray(tris.size / 3) { t ->
-                if (t < topo.triCount) true else {
-                    var nz = 0f
-                    for (j in 0 until 3) nz += normals[tris[t * 3 + j] * 3 + 2]
-                    nz / 3f > 0.35f
+            // Face triangles come from the front photo. Skull triangles use whichever photo looks at them
+            // most directly (front for the hairline, side for the sides of the head), else the fill colour.
+            val triView = ByteArray(tris.size / 3) { t ->
+                if (t < topo.triCount) 1 else {
+                    var nx = 0f; var nz = 0f
+                    for (j in 0 until 3) { val v = tris[t * 3 + j]; nx += normals[v * 3]; nz += normals[v * 3 + 2] }
+                    nx = kotlin.math.abs(nx / 3f); nz /= 3f
+                    when {
+                        sidePx != null && nx > 0.3f && nx >= nz && inPhoto(sidePx, tris, t, side.width, side.height) -> 2
+                        nz > 0.35f -> 1
+                        else -> 0
+                    }
                 }
             }
 
@@ -146,7 +163,32 @@ class FaceMesh(
             var topCol = 0
             for (col in 0 until loop.size) if (face[loop[col] * 3 + 1] > face[loop[topCol] * 3 + 1]) topCol = col
             val hv = n + 2 * cols + topCol
-            return FaceMesh(pos, normals, uv, tris, src, bake, 4096, 2048, true, src[hv * 2], src[hv * 2 + 1])
+            return FaceMesh(pos, normals, uv, tris, src, triView, sidePx, 4096, 2048, true, src[hv * 2], src[hv * 2 + 1])
+        }
+
+        private fun inPhoto(px: FloatArray, tris: IntArray, t: Int, w: Int, h: Int): Boolean {
+            for (j in 0 until 3) {
+                val v = tris[t * 3 + j]
+                if (px[v * 2] < 0 || px[v * 2 + 1] < 0 || px[v * 2] >= w || px[v * 2 + 1] >= h) return false
+            }
+            return true
+        }
+
+        /** Stretch the skull (not the face) so its top and back match the side photo. */
+        private fun reshapeFromSide(pos: FloatArray, n: Int, cols: Int, m: SideProfile.Mapping) {
+            val yRef = pos[168 * 3 + 1]          // between the eyes
+            val zRef = m.earZ
+            var curTop = -Float.MAX_VALUE; var curBack = Float.MAX_VALUE
+            for (i in n until pos.size / 3) { curTop = maxOf(curTop, pos[i * 3 + 1]); curBack = minOf(curBack, pos[i * 3 + 2]) }
+            val ky = if (curTop - yRef > 1e-3f) ((m.topY - yRef) / (curTop - yRef)).coerceIn(0.75f, 1.35f) else 1f
+            val kz = if (zRef - curBack > 1e-3f) ((zRef - m.backZ) / (zRef - curBack)).coerceIn(0.75f, 1.4f) else 1f
+            for (i in n until pos.size / 3) {
+                val k = (i - n) / cols
+                val w = smooth(minOf(1f, k.toFloat() / RINGS / 0.3f))
+                val y = pos[i * 3 + 1]; val z = pos[i * 3 + 2]
+                if (y > yRef) pos[i * 3 + 1] = yRef + (y - yRef) * (1 + (ky - 1) * w)
+                if (z < zRef) pos[i * 3 + 2] = zRef + (z - zRef) * (1 + (kz - 1) * w)
+            }
         }
 
         private fun smooth(x: Float) = x * x * (3 - 2 * x)

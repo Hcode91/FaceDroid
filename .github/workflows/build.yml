@@ -17,7 +17,7 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug testDebugUnitTest --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: FaceDroid-apk

@@ -43,10 +43,36 @@ class HeadMeshTest {
         val open = edges.values.count { it != 2 }
         assertEquals("open edges", 0, open)
 
-        val text = ObjExporter.obj(mesh, "test")
+        val text = ObjExporter.obj(listOf(MeshPart("head", mesh.positions, mesh.normals, mesh.uvs, mesh.tris, null)), "test")
         File(System.getProperty("java.io.tmpdir"), "facedroid_test_head.obj").writeText(text)
         val back = ObjLoader.load(text.byteInputStream())
-        assertEquals(mesh.triCount * 3 * RenderModel.STRIDE, back.data.size)
+        assertEquals(mesh.triCount, back.triangleCount)
         assertTrue(back.hasUvs)
+    }
+
+    @Test
+    fun sidePhotoReshapesSkull() {
+        val topo = topology()
+        val lm = LandmarkDetector.templateLandmarks(topo, 1000, 1400)
+        val plain = FaceMesh.build(topo, lm, 1f, fullHead = true)
+        // Fake side photo: project the plain head (facing left), then raise the top and push the back out.
+        val map = { y: Float, z: Float -> floatArrayOf(500f - z * 20f, 600f - y * 20f) }
+        fun pin(v: Int) = map(plain.positions[v * 3 + 1], plain.positions[v * 3 + 2])
+        var topV = 0; var backV = 0
+        for (v in 468 until plain.vertexCount) {
+            if (plain.positions[v * 3 + 1] > plain.positions[topV * 3 + 1]) topV = v
+            if (plain.positions[v * 3 + 2] < plain.positions[backV * 3 + 2]) backV = v
+        }
+        val top = pin(topV).also { it[1] -= 20f }      // 1 unit higher
+        val backP = pin(backV).also { it[0] += 30f }   // 1.5 units further back
+        val ear = map(plain.positions[234 * 3 + 1], plain.positions[234 * 3 + 2])
+        val pins = pin(1) + pin(152) + top + backP + ear
+        val side = FaceMesh.build(topo, lm, 1f, fullHead = true, side = FaceMesh.SideInput(pins, 1000, 1400))
+        assertTrue(side.positions.all { it.isFinite() })
+        val maxY = { m: FaceMesh -> (468 until m.vertexCount).maxOf { m.positions[it * 3 + 1] } }
+        val minZ = { m: FaceMesh -> (468 until m.vertexCount).minOf { m.positions[it * 3 + 2] } }
+        assertEquals(maxY(plain) + 1f, maxY(side), 0.15f)
+        assertEquals(minZ(plain) - 1.5f, minZ(side), 0.2f)
+        assertTrue(side.sidePx != null && side.triView.any { it.toInt() == 2 })
     }
 }

@@ -70,24 +70,32 @@ class ViewerActivity : ComponentActivity() {
                     ?: named.firstOrNull { !isImage(it.second) && !it.second.endsWith(".mtl", true) }
                     ?: throw IllegalArgumentException("No .obj file selected")
                 val result = contentResolver.openInputStream(obj.first)!!.use { ObjLoader.load(it) }
-                if (result.data.isEmpty()) throw IllegalArgumentException("No faces found in ${obj.second}")
+                if (result.parts.isEmpty()) throw IllegalArgumentException("No faces found in ${obj.second}")
 
-                val wanted = named.filter { it.second.endsWith(".mtl", true) }
-                    .flatMap { m -> contentResolver.openInputStream(m.first)!!.use { ObjLoader.textureNames(it) } }
+                val texNames = HashMap<String, String>()
+                for (m in named.filter { it.second.endsWith(".mtl", true) })
+                    contentResolver.openInputStream(m.first)!!.use { texNames.putAll(ObjLoader.textureNames(it)) }
                 val images = named.filter { isImage(it.second) }
-                val chosen = images.firstOrNull { img -> wanted.any { it.equals(img.second, true) } }
-                    ?: images.firstOrNull { it.second.substringBeforeLast('.').equals(obj.second.substringBeforeLast('.'), true) }
-                    ?: images.firstOrNull()
-                val texture = chosen?.let { decode(it.first) }
+                val decoded = HashMap<Uri, Bitmap>()
+                fun image(u: Uri) = decoded.getOrPut(u) { decode(u) }
 
-                RenderModel.normalise(result.data)
-                val model = RenderModel(result.data, texture)
+                val used = ArrayList<String>()
+                val parts = result.parts.map { (material, data) ->
+                    val wanted = texNames[material]
+                    val pick = images.firstOrNull { wanted != null && it.second.equals(wanted, true) }
+                        ?: images.firstOrNull { it.second.substringBeforeLast('.').endsWith("_$material", true) }
+                        ?: if (result.parts.size == 1) images.firstOrNull() else null
+                    pick?.let { used.add(it.second) }
+                    RenderModel.Part(data, pick?.let { image(it.first) })
+                }
+                RenderModel.normalise(parts.map { it.data })
+                val model = RenderModel(parts)
                 runOnUiThread { glView.setModel(model) }
                 buildString {
                     append(obj.second).append(" – ").append(model.triangleCount).append(" triangles")
                     when {
-                        chosen != null -> append(", texture ").append(chosen.second)
-                        result.hasUvs -> append(". No texture picked – open the .obj and its image together.")
+                        used.isNotEmpty() -> append(", textures: ").append(used.joinToString())
+                        result.hasUvs -> append(". No texture picked – open the .obj and its images together.")
                         else -> append(", no UVs")
                     }
                 }
@@ -116,7 +124,7 @@ class ViewerActivity : ComponentActivity() {
                     .setTitle("FaceDroid exports")
                     .setItems(objs.toTypedArray()) { _, i ->
                         val base = objs[i].removeSuffix(".obj")
-                        load(listOfNotNull(files[objs[i]], files["$base.png"], files["$base.mtl"]))
+                        load(files.filterKeys { it == objs[i] || it.startsWith(base + "_") || it == "$base.png" || it == "$base.mtl" }.values.toList())
                     }
                     .show()
             }

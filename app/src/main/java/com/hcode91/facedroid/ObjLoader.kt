@@ -10,11 +10,15 @@ import kotlin.math.sqrt
  */
 object ObjLoader {
 
-    class Result(val data: FloatArray, val mtlLibs: List<String>, val hasUvs: Boolean)
+    /** One entry per material used (in file order); "" for faces with no material. */
+    class Result(val parts: List<Pair<String, FloatArray>>, val mtlLibs: List<String>, val hasUvs: Boolean) {
+        val triangleCount get() = parts.sumOf { it.second.size } / (RenderModel.STRIDE * 3)
+    }
 
     fun load(input: InputStream): Result {
         val pos = FloatList(); val tex = FloatList(); val nrm = FloatList()
-        val out = FloatList()
+        val byMaterial = LinkedHashMap<String, FloatList>()
+        var out = FloatList().also { byMaterial[""] = it }
         val mtlLibs = ArrayList<String>()
         var anyUv = false
         val fv = IntArray(3); val ft = IntArray(3); val fn = IntArray(3)
@@ -30,6 +34,7 @@ object ObjLoader {
                     "vt" -> { tex.add(parts[1].toFloat()); tex.add(if (parts.size > 2) parts[2].toFloat() else 0f) }
                     "vn" -> { nrm.add(parts[1].toFloat()); nrm.add(parts[2].toFloat()); nrm.add(parts[3].toFloat()) }
                     "mtllib" -> mtlLibs.add(line.substring(6).trim())
+                    "usemtl" -> { val name = line.substring(6).trim(); out = byMaterial.getOrPut(name) { FloatList() } }
                     "f" -> {
                         corners.clear()
                         for (k in 1 until parts.size) {
@@ -50,19 +55,21 @@ object ObjLoader {
                 }
             }
         }
-        return Result(out.toArray(), mtlLibs, anyUv)
+        val parts = byMaterial.filter { it.value.size > 0 }.map { it.key to it.value.toArray() }
+        return Result(parts, mtlLibs, anyUv)
     }
 
-    /** Texture file names (map_Kd) referenced by an .mtl file. */
-    fun textureNames(mtl: InputStream): List<String> {
-        val names = ArrayList<String>()
+    /** Material name → texture file name (map_Kd) from an .mtl file. */
+    fun textureNames(mtl: InputStream): Map<String, String> {
+        val names = LinkedHashMap<String, String>()
+        var current = ""
         mtl.bufferedReader().useLines { lines ->
             for (raw in lines) {
                 val line = raw.trim()
-                if (line.startsWith("map_Kd", ignoreCase = true)) {
-                    // Options like "-s 1 1 1" may come first; the file name is the last token(s).
-                    val name = line.split(WS).last()
-                    names.add(name.substringAfterLast('/').substringAfterLast('\\'))
+                if (line.startsWith("newmtl ")) current = line.substring(7).trim()
+                else if (line.startsWith("map_Kd", ignoreCase = true)) {
+                    // Options like "-s 1 1 1" may come first; the file name is the last token.
+                    names[current] = line.split(WS).last().substringAfterLast('/').substringAfterLast('\\')
                 }
             }
         }
