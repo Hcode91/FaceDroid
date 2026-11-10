@@ -16,5 +16,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ViewerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="true"
+            android:label="OBJ Viewer">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="model/obj" />
+                <data android:mimeType="application/x-tgif" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

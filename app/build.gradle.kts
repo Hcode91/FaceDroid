@@ -50,6 +50,7 @@ android {
 dependencies {
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    testImplementation("junit:junit:4.13.2")
 }
 
 // MediaPipe face landmark model (~3.6 MB) is fetched at build time rather than committed.

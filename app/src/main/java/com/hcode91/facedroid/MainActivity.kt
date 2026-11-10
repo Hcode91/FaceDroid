@@ -1,5 +1,6 @@
 package com.hcode91.facedroid
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.ImageDecoder
@@ -42,6 +43,8 @@ class MainActivity : ComponentActivity() {
     private var photo: Bitmap? = null
     private var mode = Mode.PINS
     private var depthScale = 1f
+    private var fullHead = true
+    private var lastExport: List<Uri> = emptyList()
     private var builtMesh: FaceMesh? = null
     private var builtTexture: Bitmap? = null
     private var busy = false
@@ -77,7 +80,20 @@ class MainActivity : ComponentActivity() {
             meshButton.text = if (pinView.showMesh) "Mesh: on" else "Mesh: off"
         }
         button("Reset pins") { pinView.resetPins() }
+        button("Head: full") {}.apply {
+            setOnClickListener {
+                fullHead = !fullHead
+                text = if (fullHead) "Head: full" else "Head: face only"
+                builtMesh = null; builtTexture = null
+                if (mode != Mode.PINS) refreshPreview()
+            }
+        }
         button("Export") { export() }
+        button("OBJ viewer") {
+            startActivity(Intent(this, ViewerActivity::class.java).apply {
+                if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))
+            })
+        }
         root.addView(HorizontalScrollView(this).apply { addView(bar) })
 
         status = TextView(this).apply {
@@ -187,16 +203,18 @@ class MainActivity : ComponentActivity() {
         status.text = "Building mesh and UV map…"
         val lmCopy = lm.copyOf()
         val depth = depthScale
-        val needTexture = t == null
+        val head = fullHead
+        val oldTexture = t
         worker.execute {
             try {
-                val mesh = FaceMesh.build(topo, lmCopy, depth)
-                val tex = if (needTexture) TextureBaker.bake(p, topo, lmCopy) else t!!
+                val mesh = FaceMesh.build(topo, lmCopy, depth, head)
+                // Depth doesn't change the texture, so keep it if the layout still matches.
+                val tex = if (oldTexture != null && oldTexture.width == mesh.texWidth) oldTexture else TextureBaker.bake(p, mesh)
                 runOnUiThread {
                     builtMesh = mesh
                     builtTexture = tex
                     busy = false
-                    status.text = "${topo.triCount} triangles, ${FaceTopology.N} vertices, ${tex.width}×${tex.height} texture."
+                    status.text = "${mesh.triCount} triangles, ${mesh.vertexCount} vertices, ${tex.width}×${tex.height} texture."
                     done(mesh, tex)
                 }
             } catch (e: Throwable) {
@@ -208,7 +226,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshPreview() {
         ensureBuilt { mesh, tex ->
             when (mode) {
-                Mode.VIEW3D -> glView.setMesh(mesh, tex)
+                Mode.VIEW3D -> glView.setModel(RenderModel.fromFaceMesh(mesh, tex))
                 Mode.UV -> uvView.setImageBitmap(tex)
                 Mode.PINS -> {}
             }
@@ -222,7 +240,7 @@ class MainActivity : ComponentActivity() {
             val name = "face_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             worker.execute {
                 val msg = try {
-                    ObjExporter.export(this, mesh, tex, name)
+                    lastExport = ObjExporter.export(this, mesh, tex, name)
                     "Saved $name.obj, .mtl and .png to Download/${ObjExporter.FOLDER}"
                 } catch (e: Throwable) {
                     "Export failed: ${e.message}"

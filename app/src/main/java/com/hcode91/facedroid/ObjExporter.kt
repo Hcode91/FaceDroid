@@ -3,6 +3,7 @@ package com.hcode91.facedroid
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.OutputStream
@@ -13,17 +14,19 @@ object ObjExporter {
 
     const val FOLDER = "FaceDroid"
 
-    fun export(context: Context, mesh: FaceMesh, texture: Bitmap, baseName: String) {
-        save(context, "$baseName.png", "image/png") { texture.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        save(context, "$baseName.mtl", "application/octet-stream") { it.write(mtl(baseName).toByteArray()) }
-        save(context, "$baseName.obj", "application/octet-stream") { it.write(obj(mesh, baseName).toByteArray()) }
+    /** Returns the saved files' URIs (obj, mtl, png). */
+    fun export(context: Context, mesh: FaceMesh, texture: Bitmap, baseName: String): List<Uri> {
+        val png = save(context, "$baseName.png", "image/png") { texture.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val mtl = save(context, "$baseName.mtl", "application/octet-stream") { it.write(mtl(baseName).toByteArray()) }
+        val obj = save(context, "$baseName.obj", "application/octet-stream") { it.write(obj(mesh, baseName).toByteArray()) }
+        return listOf(obj, mtl, png)
     }
 
     fun obj(mesh: FaceMesh, baseName: String): String {
         val sb = StringBuilder(200_000)
         sb.append("# FaceDroid face mesh\n")
         sb.append("mtllib ").append(baseName).append(".mtl\n")
-        sb.append("o face\n")
+        sb.append(if (mesh.fullHead) "o head\n" else "o face\n")
         val p = mesh.positions
         for (i in 0 until p.size / 3) sb.append("v ").append(f(p[i * 3])).append(' ').append(f(p[i * 3 + 1])).append(' ').append(f(p[i * 3 + 2])).append('\n')
         val uv = mesh.uvs
@@ -55,7 +58,7 @@ object ObjExporter {
 
     private fun f(x: Float) = String.format(Locale.US, "%.6f", x)
 
-    private fun save(context: Context, name: String, mime: String, write: (OutputStream) -> Unit) {
+    private fun save(context: Context, name: String, mime: String, write: (OutputStream) -> Unit): Uri {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -70,6 +73,7 @@ object ObjExporter {
             values.clear()
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
+            return uri
         } catch (e: Exception) {
             resolver.delete(uri, null, null)
             throw e

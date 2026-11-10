@@ -28,6 +28,35 @@ class FaceTopology(
         out.toIntArray()
     }
 
+    /**
+     * The face's outer edge as an ordered loop of vertex indices (forehead, temples, jaw, chin),
+     * in the same direction as the triangles that use those edges.
+     */
+    val outline: IntArray by lazy {
+        val count = HashMap<Long, Int>()
+        fun key(a: Int, b: Int) = minOf(a, b).toLong() * 100000 + maxOf(a, b)
+        for (t in 0 until triCount) for (j in 0 until 3) {
+            val k = key(tris[t * 3 + j], tris[t * 3 + (j + 1) % 3])
+            count[k] = (count[k] ?: 0) + 1
+        }
+        val next = HashMap<Int, Int>()
+        for (t in 0 until triCount) for (j in 0 until 3) {
+            val a = tris[t * 3 + j]; val b = tris[t * 3 + (j + 1) % 3]
+            if (count[key(a, b)] == 1) next[a] = b
+        }
+        // Take the longest loop (the canonical mesh has exactly one).
+        val seen = HashSet<Int>()
+        var best = IntArray(0)
+        for (start in next.keys) {
+            if (start in seen) continue
+            val loop = ArrayList<Int>()
+            var c = start
+            while (seen.add(c)) { loop.add(c); c = next[c] ?: break }
+            if (loop.size > best.size) best = loop.toIntArray()
+        }
+        best
+    }
+
     /** Distance between the outer eye corners in canonical units. */
     val canonEyeDistance: Float
         get() = hypot(canon[R_EYE_OUTER * 3] - canon[L_EYE_OUTER * 3], canon[R_EYE_OUTER * 3 + 1] - canon[L_EYE_OUTER * 3 + 1])
