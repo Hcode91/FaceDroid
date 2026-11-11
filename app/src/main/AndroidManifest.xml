@@ -23,6 +23,11 @@
             android:exported="false"
             android:label="Body" />
         <activity
+            android:name=".EditorActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="false"
+            android:label="Model editor" />
+        <activity
             android:name=".ViewerActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:exported="true"

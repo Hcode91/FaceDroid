@@ -121,6 +121,14 @@ class BodyActivity : ComponentActivity() {
             pinViews.forEach { it.showOverlay = useOutline }
         }
         row2.button("Reset pins") { resetPins() }
+        row2.button("Edit model") {
+            ensureBuilt { parts ->
+                val t = template
+                EditStore.parts = parts
+                EditStore.roles = parts.map { p -> if (p.name == "body") t?.region else ByteArray(p.positions.size / 3) { EditModel.ROLE_HEAD_PART } }
+                startActivity(Intent(this, EditorActivity::class.java))
+            }
+        }
         unitButton = row2.button("Units: cm") {
             inches = !inches
             unitButton.text = if (inches) "Units: in" else "Units: cm"

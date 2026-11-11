@@ -25,6 +25,7 @@ class ViewerActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private lateinit var glView: FaceGLView
     private lateinit var status: TextView
+    private var loaded: List<MeshPart>? = null
 
     private val openFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) load(uris)
@@ -41,6 +42,11 @@ class ViewerActivity : ComponentActivity() {
         button("Open files") { openFiles.launch(arrayOf("*/*")) }
         button("My exports") { showExports() }
         button("Reset view") { glView.resetView() }
+        button("Edit") {
+            val l = loaded
+            if (l == null) status.text = "Open a model first."
+            else { EditStore.parts = l; EditStore.roles = null; startActivity(Intent(this, EditorActivity::class.java)) }
+        }
         button("Back") { finish() }
         root.addView(HorizontalScrollView(this).apply { addView(bar) })
         status = TextView(this).apply {
@@ -88,9 +94,20 @@ class ViewerActivity : ComponentActivity() {
                     pick?.let { used.add(it.second) }
                     RenderModel.Part(data, pick?.let { image(it.first) })
                 }
+                // Keep an un-normalised copy so the editor works (and saves) in the file's own units.
+                val editable = parts.mapIndexed { i, p ->
+                    val n = p.data.size / RenderModel.STRIDE
+                    val pos = FloatArray(n * 3); val nrm = FloatArray(n * 3); val uv = FloatArray(n * 2)
+                    for (v in 0 until n) {
+                        val o = v * RenderModel.STRIDE
+                        p.data.copyInto(pos, v * 3, o, o + 3); p.data.copyInto(nrm, v * 3, o + 3, o + 6); p.data.copyInto(uv, v * 2, o + 6, o + 8)
+                    }
+                    val clean = result.parts[i].first.replace(Regex("[^A-Za-z0-9_]"), "_").ifEmpty { "part${i + 1}" }
+                    MeshPart(clean, pos, nrm, uv, IntArray(n) { it }, p.texture)
+                }
                 RenderModel.normalise(parts.map { it.data })
                 val model = RenderModel(parts)
-                runOnUiThread { glView.setModel(model) }
+                runOnUiThread { loaded = editable; glView.setModel(model) }
                 buildString {
                     append(obj.second).append(" – ").append(model.triangleCount).append(" triangles")
                     when {

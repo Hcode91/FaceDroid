@@ -40,6 +40,15 @@ The **Measure** tab on the Body screen estimates body measurements from the same
 
 Everything runs on the phone; nothing is uploaded. Only measure adults who have agreed to it.
 
+## Model editor
+
+**Edit model** (face screen, body screen) or **Edit** (OBJ viewer) opens the editor. Only vertex positions change, so the texture and UV map stay as they were.
+
+- **Sliders:** Width, Depth and Height for any model (70–130%). Bodies made on the Body screen also get Head size, Shoulders, Chest, Waist, Hips, Arm thickness/length and Leg thickness/length. Movement is blended across the joins between body areas so nothing pulls apart.
+- **Brush:** Push out, Pull in or Smooth, with Brush size and Strength, and an optional left/right Mirror. One finger sculpts; two fingers turn and zoom. Undo steps back up to 20 brush strokes.
+- **Reset all** puts everything back. **Save as OBJ** writes `edit_<time>.obj`, `.mtl` and textures to `Download/FaceDroid`; the original export is not changed.
+- OBJs opened from the viewer get the whole-model sliders and the brush (the app can't tell which part is a waist or an arm), assume Y is up, and are saved with unshared vertices, so the file is larger.
+
 ## Build
 
 GitHub Actions builds the debug APK on every push (Actions → latest run → `FaceDroid-apk`). The face model downloads automatically during the build. A fixed debug key is committed so new builds install over old ones.

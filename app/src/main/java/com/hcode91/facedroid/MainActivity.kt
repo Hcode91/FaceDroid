@@ -103,6 +103,12 @@ class MainActivity : ComponentActivity() {
                 if (mode != Mode.PINS) refreshPreview()
             }
         }
+        button("Edit model") {
+            ensureBuilt { mesh, tex ->
+                EditStore.parts = listOf(MeshPart.from(mesh, tex)); EditStore.roles = null
+                startActivity(Intent(this, EditorActivity::class.java))
+            }
+        }
         button("Export") { export() }
         button("Body / Measure") { startActivity(Intent(this, BodyActivity::class.java)) }
         button("OBJ viewer") {
