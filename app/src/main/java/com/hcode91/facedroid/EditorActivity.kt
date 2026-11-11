@@ -25,7 +25,14 @@ object EditStore {
     @Volatile var parts: List<MeshPart>? = null
     /** Body-area role per vertex for each part (see [EditPart]), or null for a plain model. */
     @Volatile var roles: List<ByteArray?>? = null
+    /** Slider and brush state from an earlier visit, so editing carries on where it left off. */
+    @Volatile var state: EditState? = null
+    /** Written when the editor is left: the screen that opened it picks this up and shows the edited model. */
+    @Volatile var result: EditResult? = null
 }
+
+class EditState(val params: FloatArray, val deltas: List<FloatArray>)
+class EditResult(val base: List<MeshPart>, val edited: List<MeshPart>, val state: EditState)
 
 /**
  * Reshapes a model: sliders for the whole model and (for FaceDroid bodies) each body area, plus a
@@ -62,7 +69,16 @@ class EditorActivity : ComponentActivity() {
         source = parts
         val roles = EditStore.roles
         model = EditModel(parts.mapIndexed { i, p -> EditPart(p.name, p.positions, p.tris, roles?.getOrNull(i)) })
+        EditStore.result = null
         buildUi()
+        EditStore.state?.let { st ->
+            if (st.deltas.size == model.parts.size && st.deltas.indices.all { st.deltas[it].size == model.parts[it].delta.size }) {
+                for ((i, p) in model.parts.withIndex()) p.delta = st.deltas[i].copyOf()
+                st.params.copyInto(model.params)
+                model.recompute()
+                for ((key, sb) in sliderBars) sb.progress = Math.round((st.params[key] - 0.7f) / 0.005f).coerceIn(0, 120)
+            }
+        }
         glView.setModel(RenderModel(parts.indices.map { RenderModel.Part(soup(it, model.parts[it].normals()), parts[it].texture) }))
         setBrushing(false)
     }
@@ -197,7 +213,7 @@ class EditorActivity : ComponentActivity() {
         sliderPane.visibility = if (on) View.GONE else View.VISIBLE
         brushPane.visibility = if (on) View.VISIBLE else View.GONE
         status.text = if (on) "Brush: drag one finger over the model to sculpt. Two fingers turn and zoom. Undo steps back one stroke."
-            else "Sliders: 100% is unchanged. Drag the model to turn it, pinch to zoom. Texture and UVs are kept."
+            else "Sliders: 100% is unchanged. Drag the model to turn it, pinch to zoom. Texture and UVs are kept. Back keeps your edits."
         updateButtons()
     }
 
@@ -216,11 +232,19 @@ class EditorActivity : ComponentActivity() {
         refresh()
     }
 
+    private fun editedParts() = source.mapIndexed { i, p -> MeshPart(p.name, model.parts[i].cur.copyOf(), model.parts[i].normals(), p.uvs, p.tris, p.texture) }
+
+    /** Hand the edited model back to the screen that opened the editor. */
+    private fun publish() {
+        if (!::model.isInitialized) return
+        EditStore.result = EditResult(source, editedParts(), EditState(model.params.copyOf(), model.parts.map { it.delta.copyOf() }))
+    }
+
     private fun save() {
         if (busy) return
         busy = true
         status.text = "Saving…"
-        val parts = source.mapIndexed { i, p -> MeshPart(p.name, model.parts[i].cur.copyOf(), model.parts[i].normals(), p.uvs, p.tris, p.texture) }
+        val parts = editedParts()
         val name = "edit_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         worker.execute {
             val msg = try {
@@ -232,6 +256,6 @@ class EditorActivity : ComponentActivity() {
     }
 
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }
-    override fun onPause() { if (::glView.isInitialized) glView.onPause(); super.onPause() }
+    override fun onPause() { publish(); if (::glView.isInitialized) glView.onPause(); super.onPause() }
     override fun onDestroy() { worker.shutdown(); super.onDestroy() }
 }

@@ -50,6 +50,10 @@ class MainActivity : ComponentActivity() {
     private var lastExport: List<Uri> = emptyList()
     private var builtMesh: FaceMesh? = null
     private var builtTexture: Bitmap? = null
+    /** The head as built from the photos, and the editor state applied on top of it (if edited). */
+    private var editBaseMesh: FaceMesh? = null
+    private var editBase: List<MeshPart>? = null
+    private var editState: EditState? = null
     private var busy = false
 
     private val pickPhoto = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -105,7 +109,10 @@ class MainActivity : ComponentActivity() {
         }
         button("Edit model") {
             ensureBuilt { mesh, tex ->
-                EditStore.parts = listOf(MeshPart.from(mesh, tex)); EditStore.roles = null
+                val baseMesh = editBaseMesh ?: mesh
+                val base = editBase ?: listOf(MeshPart.from(baseMesh, tex))
+                editBaseMesh = baseMesh; editBase = base
+                EditStore.parts = base; EditStore.roles = null; EditStore.state = editState
                 startActivity(Intent(this, EditorActivity::class.java))
             }
         }
@@ -257,6 +264,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     builtMesh = mesh
                     builtTexture = tex
+                    editBaseMesh = null; editBase = null; editState = null
                     busy = false
                     status.text = "${mesh.triCount} triangles, ${mesh.vertexCount} vertices, ${tex.width}×${tex.height} texture."
                     done(mesh, tex)
@@ -298,7 +306,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); glView.onResume() }
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+        val r = EditStore.result
+        val bm = editBaseMesh
+        if (r != null && bm != null && r.base === editBase) {
+            EditStore.result = null
+            val e = r.edited[0]
+            val edited = FaceMesh(e.positions, e.normals, bm.uvs, bm.tris, bm.srcPx, bm.triView, bm.sidePx, bm.texWidth, bm.texHeight, bm.fullHead, bm.hairSampleX, bm.hairSampleY)
+            builtMesh = edited; editState = r.state
+            if (edited.fullHead) HeadStore.mesh = edited
+            status.text = "Showing your edited model – 3D, Export and the Body screen all use it. Changing pins, photos or depth rebuilds from the photos and drops the edits."
+            if (mode == Mode.VIEW3D || mode == Mode.UV) refreshPreview()
+        }
+    }
     override fun onPause() { glView.onPause(); super.onPause() }
 
     override fun onDestroy() {

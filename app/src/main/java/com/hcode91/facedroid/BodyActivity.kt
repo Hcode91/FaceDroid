@@ -69,6 +69,9 @@ class BodyActivity : ComponentActivity() {
     private var useHead = true
     private var useOutline = true
     private var built: List<MeshPart>? = null
+    /** The model as built from the photos, and the editor state applied on top of it (if edited). */
+    private var editBase: List<MeshPart>? = null
+    private var editState: EditState? = null
     private var lastExport: List<Uri> = emptyList()
     private var busy = false
 
@@ -124,8 +127,11 @@ class BodyActivity : ComponentActivity() {
         row2.button("Edit model") {
             ensureBuilt { parts ->
                 val t = template
-                EditStore.parts = parts
-                EditStore.roles = parts.map { p -> if (p.name == "body") t?.region else ByteArray(p.positions.size / 3) { EditModel.ROLE_HEAD_PART } }
+                val base = editBase ?: parts
+                editBase = base
+                EditStore.parts = base
+                EditStore.state = editState
+                EditStore.roles = base.map { p -> if (p.name == "body") t?.region else ByteArray(p.positions.size / 3) { EditModel.ROLE_HEAD_PART } }
                 startActivity(Intent(this, EditorActivity::class.java))
             }
         }
@@ -389,6 +395,7 @@ class BodyActivity : ComponentActivity() {
                 if (head != null && res.headPositions != null) parts.add(MeshPart("head", res.headPositions, res.headNormals!!, headMesh!!.uvs, headMesh.tris, headTex))
                 runOnUiThread {
                     built = parts
+                    editBase = null; editState = null
                     busy = false
                     val tris = parts.sumOf { it.tris.size / 3 }
                     status.text = "$tris triangles, ${height.toInt()} cm tall" +
@@ -441,7 +448,17 @@ class BodyActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); glView.onResume() }
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+        val r = EditStore.result
+        if (r != null && r.base === editBase) {
+            EditStore.result = null
+            built = r.edited; editState = r.state
+            status.text = "Showing your edited model – 3D, UV map and Export all use it. Changing pins, photos, height or head rebuilds from the photos and drops the edits."
+            if (mode == Mode.VIEW3D || mode == Mode.UV) refreshPreview()
+        }
+    }
     override fun onPause() { glView.onPause(); super.onPause() }
     override fun onDestroy() {
         worker.execute { detector?.close() }

@@ -26,6 +26,7 @@ class ViewerActivity : ComponentActivity() {
     private lateinit var glView: FaceGLView
     private lateinit var status: TextView
     private var loaded: List<MeshPart>? = null
+    private var editState: EditState? = null
 
     private val openFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) load(uris)
@@ -45,7 +46,7 @@ class ViewerActivity : ComponentActivity() {
         button("Edit") {
             val l = loaded
             if (l == null) status.text = "Open a model first."
-            else { EditStore.parts = l; EditStore.roles = null; startActivity(Intent(this, EditorActivity::class.java)) }
+            else { EditStore.parts = l; EditStore.roles = null; EditStore.state = editState; startActivity(Intent(this, EditorActivity::class.java)) }
         }
         button("Back") { finish() }
         root.addView(HorizontalScrollView(this).apply { addView(bar) })
@@ -107,7 +108,7 @@ class ViewerActivity : ComponentActivity() {
                 }
                 RenderModel.normalise(parts.map { it.data })
                 val model = RenderModel(parts)
-                runOnUiThread { loaded = editable; glView.setModel(model) }
+                runOnUiThread { loaded = editable; editState = null; glView.setModel(model) }
                 buildString {
                     append(obj.second).append(" – ").append(model.triangleCount).append(" triangles")
                     when {
@@ -166,7 +167,17 @@ class ViewerActivity : ComponentActivity() {
         return if (bmp.config == Bitmap.Config.ARGB_8888) bmp else bmp.copy(Bitmap.Config.ARGB_8888, false)
     }
 
-    override fun onResume() { super.onResume(); glView.onResume() }
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+        val r = EditStore.result
+        if (r != null && r.base === loaded) {
+            EditStore.result = null
+            editState = r.state
+            glView.setModel(RenderModel.fromParts(r.edited))
+            status.text = "Showing your edited model. Use Save as OBJ in the editor to keep it as a file."
+        }
+    }
     override fun onPause() { glView.onPause(); super.onPause() }
     override fun onDestroy() { worker.shutdown(); super.onDestroy() }
 
