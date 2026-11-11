@@ -22,6 +22,7 @@ The **Body** button opens the full-body screen.
 - **Fitting:** the MakeHuman base body is warped (thin-plate spline) so its joints land on the pins, then refined with points along the person's outline from MediaPipe's person mask (turn off with "Outline fit" if the background confuses it). The front photo sets height/width, the side photo sets depth. The Height box sets the real-world scale.
 - **Head:** "Head: FaceDroid" swaps the template head for the head last built on the face screen; the neck is pulled up inside it. "Head: template" keeps the MakeHuman head.
 - **Texture:** 2048×2048 on the MakeHuman UV layout; each triangle takes the photo that sees it most directly (with a hidden-surface test), colours matched to the front photo, gaps filled smoothly.
+- **Body texture: photo / skin base:** skin base replaces the photo texture on the body with a plain skin tone taken from the cheeks (no clothes, no anatomical detail, very light shading), as a base for separate clothing meshes. The head keeps its photo texture. The body *shape* still follows the clothed outline; slim it in the editor if needed.
 - **Export:** `body_<time>.obj` with a `body` part and (if used) a `head` part, each with its own texture.
 
 ## Measure

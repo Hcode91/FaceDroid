@@ -55,6 +55,33 @@ object Baker {
         }
     }
 
+    /**
+     * A plain skin texture with no clothing: [colour] everywhere, very slightly darker on surfaces
+     * that face downwards so the body doesn't look completely flat. No photo pixels are used.
+     */
+    fun skinBase(size: Int, uvs: FloatArray, tris: IntArray, normals: FloatArray, colour: Int): Bitmap {
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(colour)
+        val paint = Paint()
+        val chunk = 3000 // triangles per draw call
+        val nt = tris.size / 3
+        var t0 = 0
+        while (t0 < nt) {
+            val n = minOf(chunk, nt - t0)
+            val verts = FloatArray(n * 6); val cols = IntArray(n * 3)
+            for (i in 0 until n * 3) {
+                val v = tris[t0 * 3 + i]
+                verts[i * 2] = uvs[v * 2] * size; verts[i * 2 + 1] = (1f - uvs[v * 2 + 1]) * size
+                val s = 0.94f + 0.06f * normals[v * 3 + 1].coerceIn(-1f, 1f)
+                cols[i] = Color.rgb((Color.red(colour) * s).toInt().coerceIn(0, 255), (Color.green(colour) * s).toInt().coerceIn(0, 255), (Color.blue(colour) * s).toInt().coerceIn(0, 255))
+            }
+            canvas.drawVertices(Canvas.VertexMode.TRIANGLES, verts.size, verts, 0, null, 0, cols, 0, null, 0, 0, paint)
+            t0 += n
+        }
+        return out
+    }
+
     /** Average photo colour over the person mask (every few pixels). */
     fun maskColour(photo: Bitmap, mask: Mask): Int? {
         var r = 0L; var g = 0L; var b = 0L; var n = 0

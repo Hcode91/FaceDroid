@@ -68,6 +68,8 @@ class BodyActivity : ComponentActivity() {
     private var mode = Mode.FRONT
     private var useHead = true
     private var useOutline = true
+    private var skinBase = false
+    private lateinit var texButton: Button
     private var built: List<MeshPart>? = null
     /** The model as built from the photos, and the editor state applied on top of it (if edited). */
     private var editBase: List<MeshPart>? = null
@@ -119,6 +121,7 @@ class BodyActivity : ComponentActivity() {
         row2.addView(heightField)
         row2.addView(TextView(this).apply { text = "cm  "; setTextColor(Color.LTGRAY) })
         headButton = row2.button("") { useHead = !useHead; updateToggles(); built = null }
+        texButton = row2.button("") { skinBase = !skinBase; updateToggles(); built = null; if (mode == Mode.VIEW3D || mode == Mode.UV) refreshPreview() }
         outlineButton = row2.button("") {
             useOutline = !useOutline; updateToggles(); built = null
             pinViews.forEach { it.showOverlay = useOutline }
@@ -193,6 +196,7 @@ class BodyActivity : ComponentActivity() {
     private fun updateToggles() {
         headButton.text = if (useHead) "Head: FaceDroid" else "Head: template"
         outlineButton.text = if (useOutline) "Outline fit: on" else "Outline fit: off"
+        texButton.text = if (skinBase) "Body texture: skin base" else "Body texture: photo"
     }
 
     private fun pick(v: BodyPins.View) = pickers[v.ordinal].launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -418,9 +422,39 @@ class BodyActivity : ComponentActivity() {
                 Baker.View(p, px, gain)
             }
         }
+        if (skinBase) {
+            // Plain skin everywhere (no clothes); only a template head keeps its photo pixels.
+            val tex = Baker.skinBase(2048, t.uv, res.tris, res.normals, skinColour(front))
+            val headOnly = IntArray(res.triView.size) { i ->
+                if ((0 until 3).any { t.region[res.tris[i * 3 + it]].toInt() == BodyTemplate.HEAD }) res.triView[i] else -1
+            }
+            Baker.drawTriangles(tex, t.uv, res.tris, headOnly, bakeViews)
+            return tex
+        }
         val tex = Bitmap.createBitmap(2048, 2048, Bitmap.Config.ARGB_8888)
         Baker.drawTriangles(tex, t.uv, res.tris, res.triView, bakeViews)
         return Baker.fillGaps(tex)
+    }
+
+    /** Skin tone from the cheeks: the FaceDroid head's texture if it's in use, else the front photo. */
+    private fun skinColour(front: Bitmap): Int {
+        val samples = ArrayList<Int>()
+        val hm = if (useHead) HeadStore.mesh else null
+        val ht = HeadStore.texture
+        if (hm != null && ht != null) for (lm in intArrayOf(50, 280)) {
+            Baker.patchColour(ht, hm.uvs[lm * 2] * ht.width, (1f - hm.uvs[lm * 2 + 1]) * ht.height, maxOf(3, ht.width / 200))?.let { samples.add(it) }
+        }
+        if (samples.isEmpty()) {
+            val ids = BodyPins.ids(BodyPins.View.FRONT); val pts = pinViews[0].points
+            val nose = ids.indexOf(0)
+            for (eyeId in intArrayOf(2, 5)) {
+                val e = ids.indexOf(eyeId)
+                if (nose < 0 || e < 0) continue
+                Baker.patchColour(front, pts[e * 2], pts[nose * 2 + 1], maxOf(2, front.width / 300))?.let { samples.add(it) }
+            }
+        }
+        if (samples.isEmpty()) return Color.rgb(200, 160, 135)
+        return Color.rgb(samples.sumOf { Color.red(it) } / samples.size, samples.sumOf { Color.green(it) } / samples.size, samples.sumOf { Color.blue(it) } / samples.size)
     }
 
     private fun refreshPreview() {
