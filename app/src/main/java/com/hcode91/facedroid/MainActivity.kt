@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         button("Export") { export() }
-        button("Body") { startActivity(Intent(this, BodyActivity::class.java)) }
+        button("Body / Measure") { startActivity(Intent(this, BodyActivity::class.java)) }
         button("OBJ viewer") {
             startActivity(Intent(this, ViewerActivity::class.java).apply {
                 if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))

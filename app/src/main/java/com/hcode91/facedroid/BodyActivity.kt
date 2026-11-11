@@ -3,11 +3,15 @@ package com.hcode91.facedroid
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
+import android.widget.ListView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -30,7 +34,7 @@ import java.util.concurrent.Executors
  */
 class BodyActivity : ComponentActivity() {
 
-    private enum class Mode { FRONT, SIDE, BACK, VIEW3D, UV }
+    private enum class Mode { FRONT, SIDE, BACK, VIEW3D, UV, MEASURE }
 
     private val worker = Executors.newSingleThreadExecutor()
     private var detector: PoseDetector? = null
@@ -48,6 +52,17 @@ class BodyActivity : ComponentActivity() {
     private lateinit var headButton: Button
     private lateinit var outlineButton: Button
     private val modeButtons = HashMap<Mode, Button>()
+    private lateinit var measurePane: LinearLayout
+    private lateinit var measureView: MeasureView
+    private lateinit var measureList: ListView
+    private lateinit var unitButton: Button
+    private lateinit var linesButton: Button
+    private var inches = false
+    private var results: List<MeasurementResult> = emptyList()
+    private var measureWarnings: List<String> = emptyList()
+    private var measuredHeight: Float? = null
+    /** List rows: a String is a group heading, an Int is an index into [results]. */
+    private var rows: List<Any> = emptyList()
 
     private var mode = Mode.FRONT
     private var useHead = true
@@ -84,6 +99,7 @@ class BodyActivity : ComponentActivity() {
         modeButtons[Mode.BACK] = row1.button("Back") { setMode(Mode.BACK) }
         modeButtons[Mode.VIEW3D] = row1.button("3D") { setMode(Mode.VIEW3D) }
         modeButtons[Mode.UV] = row1.button("UV map") { setMode(Mode.UV) }
+        modeButtons[Mode.MEASURE] = row1.button("Measure") { setMode(Mode.MEASURE) }
         root.addView(HorizontalScrollView(this).apply { addView(row1) })
 
         val row2 = bar()
@@ -104,7 +120,17 @@ class BodyActivity : ComponentActivity() {
             pinViews.forEach { it.showOverlay = useOutline }
         }
         row2.button("Reset pins") { resetPins() }
-        row2.button("Export") { export() }
+        unitButton = row2.button("Units: cm") {
+            inches = !inches
+            unitButton.text = if (inches) "Units: in" else "Units: cm"
+            select(measureView.selected)
+            (measureList.adapter as? BaseAdapter)?.notifyDataSetChanged()
+        }
+        linesButton = row2.button("Lines: all") {
+            measureView.showAll = !measureView.showAll
+            linesButton.text = if (measureView.showAll) "Lines: all" else "Lines: selected"
+        }
+        row2.button("Export") { if (mode == Mode.MEASURE) exportMeasurements() else export() }
         row2.button("OBJ viewer") {
             startActivity(Intent(this, ViewerActivity::class.java).apply {
                 if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))
@@ -132,6 +158,17 @@ class BodyActivity : ComponentActivity() {
         glView = FaceGLView(this).also { stage.addView(it, full) }
         uvView = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.rgb(40, 40, 44)) }
         stage.addView(uvView, full)
+        measureView = MeasureView(this).apply { onPick = { i -> select(i); measureList.setSelection(rows.indexOf(i).coerceAtLeast(0)) } }
+        measureList = ListView(this).apply {
+            adapter = rowAdapter
+            setOnItemClickListener { _, _, pos, _ -> (rows.getOrNull(pos) as? Int)?.let { select(it) } }
+        }
+        measurePane = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(measureView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.1f))
+            addView(measureList, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        stage.addView(measurePane, full)
         root.addView(stage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
         updateToggles()
@@ -149,8 +186,12 @@ class BodyActivity : ComponentActivity() {
         for (i in 0 until 3) pinViews[i].visibility = if (m.ordinal == i) View.VISIBLE else View.GONE
         glView.visibility = if (m == Mode.VIEW3D) View.VISIBLE else View.GONE
         uvView.visibility = if (m == Mode.UV) View.VISIBLE else View.GONE
+        measurePane.visibility = if (m == Mode.MEASURE) View.VISIBLE else View.GONE
+        unitButton.visibility = measurePane.visibility
+        linesButton.visibility = measurePane.visibility
         for ((k, b) in modeButtons) b.alpha = if (k == m) 1f else 0.6f
         if (m == Mode.VIEW3D || m == Mode.UV) refreshPreview()
+        if (m == Mode.MEASURE) runMeasure()
     }
 
     private fun loadPhoto(v: BodyPins.View, uri: Uri) {
@@ -180,6 +221,99 @@ class BodyActivity : ComponentActivity() {
             } catch (e: Throwable) {
                 runOnUiThread { status.text = "Couldn't load photo: ${e.message}"; busy = false }
             }
+        }
+    }
+
+    // ---- measurements ------------------------------------------------------------------------------
+
+    private val rowAdapter = object : BaseAdapter() {
+        override fun getCount() = rows.size
+        override fun getItem(position: Int) = rows[position]
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getViewTypeCount() = 2
+        override fun getItemViewType(position: Int) = if (rows[position] is String) 0 else 1
+        override fun isEnabled(position: Int) = rows[position] is Int
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val dp = resources.displayMetrics.density
+            val tv = (convertView as? TextView) ?: TextView(this@BodyActivity).apply { setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt()) }
+            val row = rows[position]
+            if (row is String) {
+                tv.text = row; tv.setTextColor(Color.rgb(0, 230, 255)); tv.setTypeface(null, Typeface.BOLD); tv.setBackgroundColor(Color.rgb(30, 30, 36))
+                return tv
+            }
+            val r = results[row as Int]
+            tv.setTypeface(null, Typeface.NORMAL)
+            tv.setBackgroundColor(if (row == measureView.selected) Color.rgb(60, 54, 20) else Color.TRANSPARENT)
+            if (r.value == null) {
+                tv.setTextColor(Color.GRAY)
+                tv.text = "${r.def.name}: —\nUnavailable · ${r.note}"
+            } else {
+                tv.setTextColor(Color.WHITE)
+                val kind = if (r.status == MStatus.MEASURED) "Measured" else if (r.status == MStatus.RELATIVE) "Relative" else "Estimate"
+                tv.text = "${r.def.name}: ${MeasureFormat.value(r, inches)}\n$kind · ${r.reliability?.label}" + (if (r.note.isNotEmpty()) " · ${r.note}" else "")
+            }
+            return tv
+        }
+    }
+
+    private fun select(i: Int) {
+        val r = results.getOrNull(i)
+        measureView.label = if (r == null) "" else "${r.def.name}: ${MeasureFormat.value(r, inches)}"
+        measureView.selected = i
+        rowAdapter.notifyDataSetChanged()
+        if (r != null) status.text = "${r.def.name} – ${r.def.method} Limits: ${r.def.limitations}"
+    }
+
+    private fun runMeasure() {
+        val fp = photos[0]
+        if (fp == null) { status.text = "Add a front photo first. A side photo adds depth, which circumferences need."; return }
+        if (busy) return
+        val height = heightField.text.toString().toFloatOrNull()?.takeIf { it in 50f..250f }
+        val frontIn = BodyFitter.ViewInput(BodyPins.View.FRONT, pinViews[0].points, fp.width, fp.height, masks[0])
+        val sp = photos[1]
+        val sideIn = sp?.let { BodyFitter.ViewInput(BodyPins.View.SIDE, pinViews[1].points, it.width, it.height, masks[1]) }
+        busy = true
+        status.text = "Measuring…"
+        worker.execute {
+            try {
+                val eng = MeasureEngine(frontIn, sideIn, height)
+                val res = eng.run()
+                val list = ArrayList<Any>()
+                var group = ""
+                for ((i, r) in res.withIndex()) { if (r.def.group != group) { group = r.def.group; list.add(group) }; list.add(i) }
+                runOnUiThread {
+                    busy = false
+                    results = res; rows = list; measureWarnings = eng.warnings; measuredHeight = height
+                    measureView.photos = arrayOf(fp, sp); measureView.results = res
+                    select(-1)
+                    val have = res.count { it.value != null }
+                    status.text = "$have of ${res.size} measurements available – tap a row or a line. ± is the likely error. " +
+                        "The clothed outline is what gets measured. Only measure adults who've agreed to it." +
+                        eng.warnings.joinToString("") { "\n• $it" }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { busy = false; status.text = "Measuring failed: ${e.message}" }
+            }
+        }
+    }
+
+    private fun exportMeasurements() {
+        val res = results
+        if (res.isEmpty()) { status.text = "Nothing to export yet."; return }
+        if (busy) return
+        busy = true
+        val warn = measureWarnings; val height = measuredHeight; val inch = inches
+        val now = Date()
+        val name = "measure_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now)
+        worker.execute {
+            val msg = try {
+                ObjExporter.save(this, "$name.json", "application/json") { it.write(MeasureFormat.json(res, warn, height, stamp).toByteArray()) }
+                ObjExporter.save(this, "$name.csv", "text/csv") { it.write(MeasureFormat.csv(res).toByteArray()) }
+                ObjExporter.save(this, "$name.pdf", "application/pdf") { MeasurePdf.write(it, res, warn, height, inch, stamp) }
+                "Saved $name.json, .csv and .pdf to Download/${ObjExporter.FOLDER}"
+            } catch (e: Throwable) { "Export failed: ${e.message}" }
+            runOnUiThread { busy = false; status.text = msg; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
         }
     }
 

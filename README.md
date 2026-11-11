@@ -24,6 +24,21 @@ The **Body** button opens the full-body screen.
 - **Texture:** 2048×2048 on the MakeHuman UV layout; each triangle takes the photo that sees it most directly (with a hidden-surface test), colours matched to the front photo, gaps filled smoothly.
 - **Export:** `body_<time>.obj` with a `body` part and (if used) a `head` part, each with its own texture.
 
+## Measure
+
+The **Measure** tab on the Body screen estimates body measurements from the same front photo, optional side photo, pins and outline. Enter the person's height first: it sets the scale. With the height box empty, lengths are shown as a percentage of height.
+
+- **How:** lengths come from the joint pins, widths and depths from the person outline, circumferences from an ellipse through the front width and side depth at the same height. Arms use a circle from the front outline; legs do too when there's no side photo.
+- **Honest labels:** each row is *Measured*, *Estimate* (uses a shape assumption) or *Unavailable* with the reason. Torso circumferences need the side photo. A few (head height, neck length, back length, hand width, sitting height) can't be got from these photos and say so.
+- **± values:** roughly one standard deviation, built from pin accuracy (1% of height), outline edge accuracy, scale accuracy (1.5%) and the shape assumption (4–10%). Rows are tagged good / fair / rough. Values outside the usual human range, arms touching the body, and front/side photos that disagree are flagged.
+- **Clothing:** the clothed outline is what gets measured. Loose clothes make everything bigger.
+- **Overlay:** solid lines are distances seen directly; dashed lines mark the level a circumference was estimated at. Tap a line or a row to highlight it and see its method and limits. Fix pins on the Front/Side tabs and come back to re-measure.
+- **Export:** in the Measure tab, Export saves `measure_<time>.json`, `.csv` and `.pdf` to `Download/FaceDroid`. The JSON includes each measurement's definition (landmarks, method, photos needed, limits).
+- **Adding measurements:** add a line to `MeasurementRegistry.kt`.
+- **Checked against:** a synthetic 180 cm mannequin with known sizes (`MeasureTest`). It has not been validated against tape measurements of real people, so don't treat it as tailoring- or medical-grade.
+
+Everything runs on the phone; nothing is uploaded. Only measure adults who have agreed to it.
+
 ## Build
 
 GitHub Actions builds the debug APK on every push (Actions → latest run → `FaceDroid-apk`). The face model downloads automatically during the build. A fixed debug key is committed so new builds install over old ones.

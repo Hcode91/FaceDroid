@@ -67,7 +67,7 @@ object ObjExporter {
 
     private fun f(x: Float) = String.format(Locale.US, "%.6f", x)
 
-    private fun save(context: Context, name: String, mime: String, write: (OutputStream) -> Unit): Uri {
+    fun save(context: Context, name: String, mime: String, write: (OutputStream) -> Unit): Uri {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
