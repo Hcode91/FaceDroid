@@ -47,6 +47,7 @@ object MeasurementRegistry {
         d("chest_circ", "Chest circumference", UPPER, MKind.CIRCUMFERENCE, "outline 25% down shoulder→hip (front, side)", ELL, FS, CLOTHES) { it.chestCirc() },
         d("bust_circ", "Chest at fullest point (bust)", UPPER, MKind.CIRCUMFERENCE, "deepest side-outline row 20–45% down shoulder→hip", "$ELL Taken at the row where the side outline is deepest.", FS, CLOTHES) { it.bustCirc() },
         d("underbust_circ", "Under-chest (underbust)", UPPER, MKind.CIRCUMFERENCE, "outline 45% down shoulder→hip (front, side)", ELL, FS, "Fixed level; may not match where a tape would sit. $CLOTHES") { it.underbustCirc() },
+        d("bra_size_uk", "Bra size (UK, rough)", UPPER, MKind.SIZE, "fullest-chest row, under-chest row (front, side)", "Band = under-chest rounded to an even inch; cup = one letter per inch of bust over band.", FS, "Subtracts two estimates, so it is easily a cup or two out. Clothing and padding change it. Use the tape-measure box for an exact size.") { it.braSize() },
         d("shoulder_to_waist", "Shoulder to waist", UPPER, MKind.LENGTH, "shoulder line, narrowest waist row", "Vertical distance from the shoulder line to the narrowest waist row.", F, "The narrowest row may not be the natural waist under loose clothing.") { it.shoulderToWaist() },
         d("neck_to_waist", "Neck to waist (front)", UPPER, MKind.LENGTH, "narrowest neck row, narrowest waist row", "Vertical distance between the two rows.", F, "Starts at the narrowest neck level, not the neck base.") { it.neckToWaist() },
         missing("back_length", "Back length", UPPER, MKind.LENGTH, "Needs the bone at the base of the neck (C7), which can't be found reliably in a photo"),
@@ -105,6 +106,7 @@ object MeasurementRegistry {
 object MeasureFormat {
     fun value(r: MeasurementResult, inches: Boolean): String {
         val v = r.value ?: return "—"
+        r.text?.let { return it }
         return when {
             r.def.kind == MKind.RATIO -> String.format(Locale.US, "%.2f ± %.2f", v, r.plusMinus)
             r.status == MStatus.RELATIVE -> String.format(Locale.US, "%.1f ± %.1f %% of height", v, r.plusMinus)
@@ -115,6 +117,7 @@ object MeasureFormat {
 
     fun unit(r: MeasurementResult) = when {
         r.value == null -> ""
+        r.def.kind == MKind.SIZE -> "cm_bust_over_band"
         r.def.kind == MKind.RATIO -> "ratio"
         r.status == MStatus.RELATIVE -> "percent_of_height"
         else -> "cm"
@@ -140,6 +143,7 @@ object MeasureFormat {
             append("\"status\": \"").append(r.status.name.lowercase()).append("\", \"value\": ").append(num(r.value)).append(", ")
             append("\"unit\": \"").append(unit(r)).append("\", \"plusMinus\": ").append(if (r.value == null) "null" else num(r.plusMinus)).append(", ")
             append("\"reliability\": ").append(r.reliability?.let { "\"" + it.name.lowercase() + "\"" } ?: "null").append(", ")
+            append("\"text\": ").append(r.text?.let { "\"" + esc(it) + "\"" } ?: "null").append(", ")
             append("\"note\": \"").append(esc(r.note)).append("\", ")
             append("\"definition\": {\"landmarks\": \"").append(esc(r.def.landmarks)).append("\", \"method\": \"").append(esc(r.def.method))
             append("\", \"views\": \"").append(esc(r.def.views)).append("\", \"needsScale\": ").append(r.def.needsScale)
@@ -152,13 +156,13 @@ object MeasureFormat {
     private fun cell(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
 
     fun csv(results: List<MeasurementResult>) = buildString {
-        append("id,name,group,kind,status,value,unit,plus_minus,reliability,note,method,limitations\n")
+        append("id,name,group,kind,status,value,unit,plus_minus,reliability,note,method,limitations,text\n")
         for (r in results) {
             append(r.def.id).append(',').append(cell(r.def.name)).append(',').append(cell(r.def.group)).append(',')
             append(r.def.kind.name.lowercase()).append(',').append(r.status.name.lowercase()).append(',')
             append(if (r.value == null) "" else num(r.value)).append(',').append(unit(r)).append(',')
             append(if (r.value == null) "" else num(r.plusMinus)).append(',').append(r.reliability?.name?.lowercase() ?: "").append(',')
-            append(cell(r.note)).append(',').append(cell(r.def.method)).append(',').append(cell(r.def.limitations)).append('\n')
+            append(cell(r.note)).append(',').append(cell(r.def.method)).append(',').append(cell(r.def.limitations)).append(',').append(cell(r.text ?: "")).append('\n')
         }
     }
 }

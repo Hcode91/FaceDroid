@@ -34,6 +34,7 @@ The **Measure** tab on the Body screen estimates body measurements from the same
 - **Clothing:** the clothed outline is what gets measured. Loose clothes make everything bigger.
 - **Overlay:** solid lines are distances seen directly; dashed lines mark the level a circumference was estimated at. Tap a line or a row to highlight it and see its method and limits. Fix pins on the Front/Side tabs and come back to re-measure.
 - **Export:** in the Measure tab, Export saves `measure_<time>.json`, `.csv` and `.pdf` to `Download/FaceDroid`. The JSON includes each measurement's definition (landmarks, method, photos needed, limits).
+- **Bra size (UK):** a rough estimate from the bust and under-chest circumferences (needs a side photo and a height), shown with its likely cup and band range. One cup is only 2.5 cm, so expect it to be a cup or two out. **Bra size from tape** gives an exact size from two typed-in tape measurements: band = under-bust rounded to an even inch, one cup per inch of bust over band.
 - **Adding measurements:** add a line to `MeasurementRegistry.kt`.
 - **Checked against:** a synthetic 180 cm mannequin with known sizes (`MeasureTest`). It has not been validated against tape measurements of real people, so don't treat it as tailoring- or medical-grade.
 

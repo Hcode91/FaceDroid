@@ -57,6 +57,7 @@ class BodyActivity : ComponentActivity() {
     private lateinit var measureList: ListView
     private lateinit var unitButton: Button
     private lateinit var linesButton: Button
+    private lateinit var tapeButton: Button
     private var inches = false
     private var results: List<MeasurementResult> = emptyList()
     private var measureWarnings: List<String> = emptyList()
@@ -130,6 +131,7 @@ class BodyActivity : ComponentActivity() {
             measureView.showAll = !measureView.showAll
             linesButton.text = if (measureView.showAll) "Lines: all" else "Lines: selected"
         }
+        tapeButton = row2.button("Bra size from tape") { tapeDialog() }
         row2.button("Export") { if (mode == Mode.MEASURE) exportMeasurements() else export() }
         row2.button("OBJ viewer") {
             startActivity(Intent(this, ViewerActivity::class.java).apply {
@@ -189,6 +191,7 @@ class BodyActivity : ComponentActivity() {
         measurePane.visibility = if (m == Mode.MEASURE) View.VISIBLE else View.GONE
         unitButton.visibility = measurePane.visibility
         linesButton.visibility = measurePane.visibility
+        tapeButton.visibility = measurePane.visibility
         for ((k, b) in modeButtons) b.alpha = if (k == m) 1f else 0.6f
         if (m == Mode.VIEW3D || m == Mode.UV) refreshPreview()
         if (m == Mode.MEASURE) runMeasure()
@@ -262,6 +265,37 @@ class BodyActivity : ComponentActivity() {
         measureView.selected = i
         rowAdapter.notifyDataSetChanged()
         if (r != null) status.text = "${r.def.name} – ${r.def.method} Limits: ${r.def.limitations}"
+    }
+
+    /** Exact UK bra size from two tape measurements typed in by the user. */
+    private fun tapeDialog() {
+        val unit = if (inches) "in" else "cm"
+        fun field(hint: String) = EditText(this).apply { this.hint = hint; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+        val bust = field("Bust, around the fullest point ($unit)")
+        val under = field("Under-bust, snug around the ribcage ($unit)")
+        val out = TextView(this).apply { textSize = 18f; setPadding(0, 24, 0, 0) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad / 2, pad, 0)
+            addView(bust); addView(under); addView(out)
+        }
+        val watcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val k = if (inches) 2.54f else 1f
+                val b = bust.text.toString().toFloatOrNull()?.times(k)
+                val u = under.text.toString().toFloatOrNull()?.times(k)
+                out.text = when {
+                    b == null || u == null -> ""
+                    u !in 50f..160f || b !in 50f..200f -> "Check the numbers (units are $unit)"
+                    else -> "UK size: " + BraSize.uk(b, u)
+                }
+            }
+        }
+        bust.addTextChangedListener(watcher); under.addTextChangedListener(watcher)
+        android.app.AlertDialog.Builder(this).setTitle("Bra size from tape measurements").setView(box).setPositiveButton("Close", null).show()
     }
 
     private fun runMeasure() {

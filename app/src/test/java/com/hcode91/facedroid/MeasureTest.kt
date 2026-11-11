@@ -176,6 +176,21 @@ class MeasureTest {
     }
 
     @Test
+    fun braSizeFormula() {
+        assertEquals("34B", BraSize.uk(36f * 2.54f, 34f * 2.54f))
+        assertEquals("32DD", BraSize.uk(94f, 81f))       // 37.0 in over 31.9 in
+        assertEquals("36AA", BraSize.uk(36.2f * 2.54f, 35.6f * 2.54f))
+        assertEquals("30, smaller than AA", BraSize.uk(70f, 76f))
+        val res = MeasureEngine(front(), side(), 180f).run().associateBy { it.def.id }
+        val bra = res["bra_size_uk"]!!
+        println("bra: ${MeasureFormat.value(bra, false)} | ${bra.note}")
+        assertEquals(BraSize.uk(res["bust_circ"]!!.value!!, res["underbust_circ"]!!.value!!), bra.text!!.substringBefore(" ("))
+        assertEquals(Reliability.LOW, bra.reliability)
+        assertNull(MeasureEngine(front(), null, 180f).run().first { it.def.id == "bra_size_uk" }.value)
+        assertNull(MeasureEngine(front(), side(), null).run().first { it.def.id == "bra_size_uk" }.value)
+    }
+
+    @Test
     fun exportsAreWellFormed() {
         val eng = MeasureEngine(front(), side(), 180f)
         val res = eng.run()

@@ -5,7 +5,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.sqrt
 
-enum class MKind { LENGTH, WIDTH, DEPTH, CIRCUMFERENCE, RATIO }
+enum class MKind { LENGTH, WIDTH, DEPTH, CIRCUMFERENCE, RATIO, SIZE }
 
 enum class MStatus(val label: String) {
     MEASURED("Measured from photo"),
@@ -23,6 +23,8 @@ class Seg(val view: Int, val x1: Float, val y1: Float, val x2: Float, val y2: Fl
 class Outcome(
     val value: Float?, val unc: Float = 0f, val estimated: Boolean = false,
     val note: String = "", val segs: List<Seg> = emptyList(), val flagged: Boolean = false,
+    /** Shown instead of the number, for results that aren't a plain number (e.g. a clothing size). */
+    val text: String? = null,
 )
 
 /** Machine-readable definition of one measurement. Add entries to [MeasurementRegistry] to extend the app. */
@@ -36,7 +38,7 @@ class MeasurementResult(
     val def: MeasurementDef, val status: MStatus,
     /** cm, or % of height when [status] is RELATIVE, or a plain number for ratios. */
     val value: Float?, val plusMinus: Float, val reliability: Reliability?,
-    val note: String, val segs: List<Seg>,
+    val note: String, val segs: List<Seg>, val text: String? = null,
 )
 
 /**
@@ -343,6 +345,20 @@ class MeasureEngine(private val front: BodyFitter.ViewInput, sideIn: BodyFitter.
     fun chestCirc() = circOf(chest)
     fun bustCirc() = if (s == null) none(needSide) else circOf(bust)
     fun underbustCirc() = circOf(underbust)
+
+    fun braSize(): Outcome {
+        if (!scaleKnown) return none("Needs a height, to get real centimetres")
+        val b = bustCirc(); val u = underbustCirc()
+        val bv = b.value ?: return none(b.note)
+        val uv = u.value ?: return none(u.note)
+        val band = BraSize.band(uv)
+        val sd = q(b.unc, u.unc)
+        val text = BraSize.uk(bv, uv) + " (cup " + BraSize.cup(BraSize.cupIndex(bv - sd, band)) + "–" + BraSize.cup(BraSize.cupIndex(bv + sd, band)) +
+            ", band " + BraSize.band(uv - u.unc) + "–" + BraSize.band(uv + u.unc) + ")"
+        return Outcome(bv - band * 2.54f, sd, true,
+            "From bust ${n1(bv)} and under-chest ${n1(uv)} cm. One cup is only 2.5 cm, so this can be a cup or two out; clothing and padding change it. Only meaningful for people who wear bras",
+            b.segs + u.segs, true, text)
+    }
     fun waistWidth() = widthOf(waist)
     fun waistDepth() = depthOf(waist)
     fun waistCirc() = circOf(waist)
@@ -590,7 +606,7 @@ class MeasureEngine(private val front: BodyFitter.ViewInput, sideIn: BodyFitter.
     fun run(): List<MeasurementResult> = MeasurementRegistry.all.map { def ->
         val o = try { def.compute(this) } catch (e: Exception) { none("Couldn't be worked out from these photos") }
         val v = o.value
-        if (v == null || !v.isFinite() || v <= 0f) return@map MeasurementResult(def, MStatus.UNAVAILABLE, null, 0f, null, o.note.ifEmpty { "Not supported by these photos" }, emptyList())
+        if (v == null || !v.isFinite() || (v <= 0f && o.text == null)) return@map MeasurementResult(def, MStatus.UNAVAILABLE, null, 0f, null, o.note.ifEmpty { "Not supported by these photos" }, emptyList())
         var note = o.note; var flagged = o.flagged
         plausible[def.id]?.let { (lo, hi) ->
             if (v < lo * h || v > hi * h) { flagged = true; note = "Outside the usual range – check the pins and outline. $note".trim() }
@@ -600,12 +616,12 @@ class MeasureEngine(private val front: BodyFitter.ViewInput, sideIn: BodyFitter.
             o.estimated -> MStatus.ESTIMATED
             else -> MStatus.MEASURED
         }
-        val rel = o.unc / v
+        val rel = if (v > 0f) o.unc / v else 1f
         val reliability = when {
             flagged || rel > 0.08f -> Reliability.LOW
             rel > 0.04f || o.estimated -> Reliability.MEDIUM
             else -> Reliability.HIGH
         }
-        MeasurementResult(def, status, v, o.unc, reliability, note, o.segs)
+        MeasurementResult(def, status, v, o.unc, reliability, note, o.segs, o.text)
     }
 }
