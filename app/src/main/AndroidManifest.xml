@@ -8,8 +8,7 @@
         android:label="FaceDroid"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity
-            android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:name=".HomeActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -17,21 +16,26 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="false"
+            android:label="3D head" />
+        <activity
             android:name=".BodyActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:windowSoftInputMode="adjustPan"
             android:exported="false"
-            android:label="Body" />
+            android:label="3D body" />
         <activity
             android:name=".EditorActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:exported="false"
-            android:label="Model editor" />
+            android:label="Edit shape" />
         <activity
             android:name=".ViewerActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:exported="true"
-            android:label="OBJ Viewer">
+            android:label="FaceDroid model viewer">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

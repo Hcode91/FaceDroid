@@ -6,18 +6,19 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
-import android.view.Gravity
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
-import android.widget.ListView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -29,47 +30,58 @@ import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
- * Full body from a front photo (required) plus optional side and back photos, standing in an
- * A-pose (arms slightly away from the body). Uses the FaceDroid head from the face screen if built.
+ * Full body from a front photo (required) plus optional side and back photos, in four steps:
+ * photos, pins, 3D model, measurements. Uses the head from the 3D head screen if one was built.
  */
 class BodyActivity : ComponentActivity() {
 
-    private enum class Mode { FRONT, SIDE, BACK, VIEW3D, UV, MEASURE }
+    companion object {
+        const val EXTRA_GOAL = "goal"
+        const val GOAL_MEASURE = "measure"
+        private const val PHOTOS = 0; private const val PINS = 1; private const val MODEL = 2; private const val MEASURE = 3
+    }
 
     private val worker = Executors.newSingleThreadExecutor()
     private var detector: PoseDetector? = null
     @Volatile private var template: BodyTemplate? = null
+    private var measureFirst = false
 
     private val views = BodyPins.View.values()
+    private val viewNames = listOf("Front", "Side", "Back")
     private val photos = arrayOfNulls<Bitmap>(3)
     private val masks = arrayOfNulls<Mask>(3)
     private val detectedPins = arrayOfNulls<FloatArray>(3)
+
+    private lateinit var steps: StepBar
+    private lateinit var status: TextView
+    private lateinit var photosPane: View
+    private lateinit var tiles: List<PhotoTile>
+    private lateinit var heightField: EditText
     private lateinit var pinViews: Array<PointPinView>
+    private lateinit var pinTabs: List<Button>
     private lateinit var glView: FaceGLView
     private lateinit var uvView: ImageView
-    private lateinit var status: TextView
-    private lateinit var heightField: EditText
-    private lateinit var headButton: Button
-    private lateinit var outlineButton: Button
-    private val modeButtons = HashMap<Mode, Button>()
     private lateinit var measurePane: LinearLayout
     private lateinit var measureView: MeasureView
     private lateinit var measureList: ListView
+    private val optionRows = ArrayList<View>()
+    private lateinit var outlineButton: Button
+    private lateinit var view3dButton: Button
+    private lateinit var viewTexButton: Button
+    private lateinit var headButton: Button
+    private lateinit var texButton: Button
+    private lateinit var viewerButton: Button
     private lateinit var unitButton: Button
     private lateinit var linesButton: Button
-    private lateinit var tapeButton: Button
-    private var inches = false
-    private var results: List<MeasurementResult> = emptyList()
-    private var measureWarnings: List<String> = emptyList()
-    private var measuredHeight: Float? = null
-    /** List rows: a String is a group heading, an Int is an index into [results]. */
-    private var rows: List<Any> = emptyList()
+    private lateinit var backButton: Button
+    private lateinit var nextButton: Button
 
-    private var mode = Mode.FRONT
+    private var step = PHOTOS
+    private var pinTab = 0
+    private var showTexture = false
     private var useHead = true
     private var useOutline = true
     private var skinBase = false
-    private lateinit var texButton: Button
     private var built: List<MeshPart>? = null
     /** The model as built from the photos, and the editor state applied on top of it (if edited). */
     private var editBase: List<MeshPart>? = null
@@ -77,103 +89,65 @@ class BodyActivity : ComponentActivity() {
     private var lastExport: List<Uri> = emptyList()
     private var busy = false
 
+    private var inches = false
+    private var results: List<MeasurementResult> = emptyList()
+    private var measureWarnings: List<String> = emptyList()
+    private var measuredHeight: Float? = null
+    /** List rows: a String is a group heading, an Int is an index into [results]. */
+    private var rows: List<Any> = emptyList()
+
     private val pickers = views.map { v ->
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) loadPhoto(v, uri) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        measureFirst = intent.getStringExtra(EXTRA_GOAL) == GOAL_MEASURE
         buildUi()
-        setMode(Mode.FRONT)
+        setStep(PHOTOS)
         worker.execute { template = assets.open("body_template.txt").use { BodyTemplate.parse(it) } }
     }
 
     private fun buildUi() {
-        val dp = resources.displayMetrics.density
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(18, 18, 22)) }
-        fun bar(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        fun LinearLayout.button(label: String, onClick: () -> Unit) = Button(this@BodyActivity).apply {
-            text = label; isAllCaps = false; setOnClickListener { onClick() }
-            this@button.addView(this)
-        }
-        val row1 = bar()
-        row1.button("Front photo") { pick(BodyPins.View.FRONT) }
-        row1.button("Side photo") { pick(BodyPins.View.SIDE) }
-        row1.button("Back photo") { pick(BodyPins.View.BACK) }
-        modeButtons[Mode.FRONT] = row1.button("Front") { setMode(Mode.FRONT) }
-        modeButtons[Mode.SIDE] = row1.button("Side") { setMode(Mode.SIDE) }
-        modeButtons[Mode.BACK] = row1.button("Back") { setMode(Mode.BACK) }
-        modeButtons[Mode.VIEW3D] = row1.button("3D") { setMode(Mode.VIEW3D) }
-        modeButtons[Mode.UV] = row1.button("UV map") { setMode(Mode.UV) }
-        modeButtons[Mode.MEASURE] = row1.button("Measure") { setMode(Mode.MEASURE) }
-        root.addView(HorizontalScrollView(this).apply { addView(row1) })
-
-        val row2 = bar()
-        row2.addView(TextView(this).apply { text = "  Height"; setTextColor(Color.LTGRAY) })
-        heightField = EditText(this).apply {
-            setText("175"); inputType = InputType.TYPE_CLASS_NUMBER; setTextColor(Color.WHITE); minEms = 3
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun afterTextChanged(s: android.text.Editable?) { built = null }
-            })
-        }
-        row2.addView(heightField)
-        row2.addView(TextView(this).apply { text = "cm  "; setTextColor(Color.LTGRAY) })
-        headButton = row2.button("") { useHead = !useHead; updateToggles(); built = null }
-        texButton = row2.button("") { skinBase = !skinBase; updateToggles(); built = null; if (mode == Mode.VIEW3D || mode == Mode.UV) refreshPreview() }
-        outlineButton = row2.button("") {
-            useOutline = !useOutline; updateToggles(); built = null
-            pinViews.forEach { it.showOverlay = useOutline }
-        }
-        row2.button("Reset pins") { resetPins() }
-        row2.button("Edit model") {
-            ensureBuilt { parts ->
-                val t = template
-                val base = editBase ?: parts
-                editBase = base
-                EditStore.parts = base
-                EditStore.state = editState
-                EditStore.roles = base.map { p -> if (p.name == "body") t?.region else ByteArray(p.positions.size / 3) { EditModel.ROLE_HEAD_PART } }
-                startActivity(Intent(this, EditorActivity::class.java))
-            }
-        }
-        unitButton = row2.button("Units: cm") {
-            inches = !inches
-            unitButton.text = if (inches) "Units: in" else "Units: cm"
-            select(measureView.selected)
-            (measureList.adapter as? BaseAdapter)?.notifyDataSetChanged()
-        }
-        linesButton = row2.button("Lines: all") {
-            measureView.showAll = !measureView.showAll
-            linesButton.text = if (measureView.showAll) "Lines: all" else "Lines: selected"
-        }
-        tapeButton = row2.button("Bra size from tape") { tapeDialog() }
-        row2.button("Export") { if (mode == Mode.MEASURE) exportMeasurements() else export() }
-        row2.button("OBJ viewer") {
-            startActivity(Intent(this, ViewerActivity::class.java).apply {
-                if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))
-            })
-        }
-        root.addView(HorizontalScrollView(this).apply { addView(row2) })
-
-        status = TextView(this).apply {
-            setTextColor(Color.LTGRAY)
-            setPadding((12 * dp).toInt(), (2 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
-            text = "Full-length photos, standing straight, arms slightly away from the body, fitted clothes. " +
-                "Front is required; side and back are optional. Build a head on the face screen first to use it here."
-        }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BG) }
+        root.addView(Ui.titleBar(this, if (measureFirst) "Body measurements" else "3D body"))
+        steps = StepBar(this, listOf("Photos", "Pins", "3D model", "Measure")) { setStep(it) }
+        root.addView(steps)
+        status = Ui.hint(this)
         root.addView(status)
 
+        // ---- content
         val stage = FrameLayout(this)
         val full = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        pinViews = Array(3) { i ->
-            PointPinView(this).apply {
-                hint = "Tap “${views[i].name.lowercase().replaceFirstChar { it.uppercase() }} photo” to add one"
-                onChanged = { built = null }
-                stage.addView(this, full)
-            }
+        fun pick(i: Int) = pickers[i].launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        tiles = listOf(
+            PhotoTile(this, "Front photo", "Needed – whole body, facing the camera") { pick(0) },
+            PhotoTile(this, "Side photo", if (measureFirst) "Needed for waist, chest and hip sizes" else "Optional – gives real depth") { pick(1) },
+            PhotoTile(this, "Back photo", "Optional – textures the back of the model") { pick(2) },
+        )
+        heightField = EditText(this).apply {
+            setText("175"); inputType = InputType.TYPE_CLASS_NUMBER; setTextColor(Color.WHITE); minEms = 3
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) { built = null }
+            })
         }
+        photosPane = ScrollView(this).apply {
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                for (t in tiles) addView(t)
+                addView(Ui.row(context).apply {
+                    setPadding(Ui.dp(context, 16f), Ui.dp(context, 4f), Ui.dp(context, 16f), 0)
+                    addView(TextView(context).apply { text = "Person's height"; setTextColor(Color.WHITE); textSize = 16f })
+                    addView(heightField)
+                    addView(Ui.label(context, "cm – sets the real-world size"))
+                })
+                addView(Ui.hint(context).apply { text = "Tips: stand straight with arms a little away from the body and feet apart, in fitted clothes. Take each photo from the same distance, at about waist height. Only measure adults who've agreed to it." })
+            })
+        }
+        stage.addView(photosPane, full)
+        pinViews = Array(3) { PointPinView(this).apply { onChanged = { built = null }; stage.addView(this, full) } }
         glView = FaceGLView(this).also { stage.addView(it, full) }
         uvView = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.rgb(40, 40, 44)) }
         stage.addView(uvView, full)
@@ -189,36 +163,129 @@ class BodyActivity : ComponentActivity() {
         }
         stage.addView(measurePane, full)
         root.addView(stage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // ---- options for each step (only the current step's row is shown)
+        fun options(build: LinearLayout.() -> Unit): View = Ui.scroll(Ui.row(this).apply(build)).also { optionRows.add(it); root.addView(it) }
+        options { }
+        options {
+            addView(Ui.label(context, "Photo"))
+            pinTabs = viewNames.mapIndexed { i, n -> Ui.secondary(context, n) { pinTab = i; showPins() }.also { addView(it) } }
+            addView(Ui.label(context, "  "))
+            outlineButton = Ui.secondary(context, "Use outline") {
+                useOutline = !useOutline; built = null
+                pinViews.forEach { it.showOverlay = useOutline }
+                Ui.setChecked(outlineButton, useOutline)
+                status.text = if (useOutline) "The blue outline is used to match the body's width and depth."
+                    else "Outline ignored: the model's shape comes from the pins only. Use this if the outline is wrong (busy background, loose clothes)."
+            }
+            Ui.setChecked(outlineButton, true)
+            addView(outlineButton)
+            addView(Ui.secondary(context, "Reset pins") { detectedPins[pinTab]?.let { pinViews[pinTab].setPoints(it) } })
+        }
+        options {
+            addView(Ui.label(context, "Show"))
+            view3dButton = Ui.secondary(context, "3D model") { showTexture = false; showModel() }
+            viewTexButton = Ui.secondary(context, "Texture") { showTexture = true; showModel() }
+            addView(view3dButton); addView(viewTexButton)
+            addView(Ui.label(context, "  Head"))
+            headButton = Ui.secondary(context, "") { useHead = !useHead; built = null; showModel() }
+            addView(headButton)
+            addView(Ui.label(context, "  Skin"))
+            texButton = Ui.secondary(context, "") { skinBase = !skinBase; built = null; showModel() }
+            addView(texButton)
+            addView(Ui.label(context, "  Then"))
+            addView(Ui.secondary(context, "Edit shape") { openEditor() })
+            viewerButton = Ui.secondary(context, "Open saved file") {
+                startActivity(Intent(this@BodyActivity, ViewerActivity::class.java).putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport)))
+            }
+            viewerButton.visibility = View.GONE
+            addView(viewerButton)
+        }
+        options {
+            unitButton = Ui.secondary(context, "Units: cm") {
+                inches = !inches
+                unitButton.text = if (inches) "Units: inches" else "Units: cm"
+                select(measureView.selected)
+            }
+            addView(unitButton)
+            linesButton = Ui.secondary(context, "Lines: all") {
+                measureView.showAll = !measureView.showAll
+                linesButton.text = if (measureView.showAll) "Lines: all" else "Lines: selected only"
+            }
+            addView(linesButton)
+            addView(Ui.secondary(context, "Bra size from a tape measure") { tapeDialog() })
+        }
+
+        // ---- bottom bar: back one step, and the one main action
+        val bottom = Ui.row(this).apply { setPadding(Ui.dp(context, 8f), Ui.dp(context, 2f), Ui.dp(context, 8f), Ui.dp(context, 8f)) }
+        backButton = Ui.secondary(this, "‹ Back") { setStep(if (step == MEASURE && measureFirst) PINS else step - 1) }
+        nextButton = Ui.primary(this, "Next") {
+            when (step) {
+                PHOTOS -> setStep(PINS)
+                PINS -> setStep(if (measureFirst) MEASURE else MODEL)
+                MODEL -> export()
+                else -> exportMeasurements()
+            }
+        }
+        bottom.addView(backButton)
+        bottom.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        bottom.addView(nextButton)
+        root.addView(bottom)
         setContentView(root)
-        updateToggles()
     }
 
-    private fun updateToggles() {
-        headButton.text = if (useHead) "Head: FaceDroid" else "Head: template"
-        outlineButton.text = if (useOutline) "Outline fit: on" else "Outline fit: off"
-        texButton.text = if (skinBase) "Body texture: skin base" else "Body texture: photo"
+    private fun setStep(target: Int) {
+        var s = target
+        if (s > PHOTOS && photos[0] == null) { s = PHOTOS; status.text = "Choose a front photo first." }
+        else status.text = when (s) {
+            PHOTOS -> if (measureFirst) "Choose a front and a side photo and enter the height." else "Choose a front photo. Side and back photos are optional but improve the model."
+            PINS -> "Check the pins sit on the joints (blue = the person's left, pink = their right). Drag any that are off. Pinch to zoom."
+            MODEL -> "Drag to turn, pinch to zoom."
+            else -> "Measuring…"
+        }
+        step = s
+        steps.select(s)
+        for (i in PINS..MEASURE) steps.setUsable(i, photos[0] != null)
+        photosPane.visibility = if (s == PHOTOS) View.VISIBLE else View.GONE
+        measurePane.visibility = if (s == MEASURE) View.VISIBLE else View.GONE
+        for ((i, row) in optionRows.withIndex()) row.visibility = if (i == s) View.VISIBLE else View.GONE
+        backButton.visibility = if (s == PHOTOS) View.INVISIBLE else View.VISIBLE
+        nextButton.text = when (s) {
+            PHOTOS -> "Next: check pins"
+            PINS -> if (measureFirst) "Next: measure" else "Next: build 3D model"
+            MODEL -> "Save OBJ"
+            else -> "Save report"
+        }
+        Ui.setUsable(nextButton, photos[0] != null)
+        if (s == PINS) { if (photos[pinTab] == null) pinTab = 0; showPins() } else pinViews.forEach { it.visibility = View.GONE }
+        if (s == MODEL) showModel() else { glView.visibility = View.GONE; uvView.visibility = View.GONE }
+        if (s == MEASURE) runMeasure()
     }
 
-    private fun pick(v: BodyPins.View) = pickers[v.ordinal].launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    private fun showPins() {
+        for (i in 0 until 3) {
+            pinViews[i].visibility = if (i == pinTab) View.VISIBLE else View.GONE
+            Ui.setChecked(pinTabs[i], i == pinTab)
+            pinTabs[i].visibility = if (photos[i] != null) View.VISIBLE else View.GONE
+        }
+    }
 
-    private fun setMode(m: Mode) {
-        mode = m
-        for (i in 0 until 3) pinViews[i].visibility = if (m.ordinal == i) View.VISIBLE else View.GONE
-        glView.visibility = if (m == Mode.VIEW3D) View.VISIBLE else View.GONE
-        uvView.visibility = if (m == Mode.UV) View.VISIBLE else View.GONE
-        measurePane.visibility = if (m == Mode.MEASURE) View.VISIBLE else View.GONE
-        unitButton.visibility = measurePane.visibility
-        linesButton.visibility = measurePane.visibility
-        tapeButton.visibility = measurePane.visibility
-        for ((k, b) in modeButtons) b.alpha = if (k == m) 1f else 0.6f
-        if (m == Mode.VIEW3D || m == Mode.UV) refreshPreview()
-        if (m == Mode.MEASURE) runMeasure()
+    private fun showModel() {
+        glView.visibility = if (showTexture) View.GONE else View.VISIBLE
+        uvView.visibility = if (showTexture) View.VISIBLE else View.GONE
+        Ui.setChecked(view3dButton, !showTexture); Ui.setChecked(viewTexButton, showTexture)
+        headButton.text = if (useHead) "From 3D head screen" else "Built-in"
+        texButton.text = if (skinBase) "Plain skin (no clothes)" else "From photos"
+        ensureBuilt { parts ->
+            if (step != MODEL) return@ensureBuilt
+            if (showTexture) uvView.setImageBitmap(parts.first().texture) else glView.setModel(RenderModel.fromParts(parts))
+        }
     }
 
     private fun loadPhoto(v: BodyPins.View, uri: Uri) {
         if (busy) return
         busy = true
-        status.text = "Finding body…"
+        status.text = "Finding the body…"
         worker.execute {
             try {
                 val bmp = Photos.decode(this, uri)
@@ -233,153 +300,27 @@ class BodyActivity : ComponentActivity() {
                     photos[i] = bmp; masks[i] = r?.mask; detectedPins[i] = pins
                     pinViews[i].set(bmp, BodyPins.pins(v), pins, BodyPins.lines(v), overlay)
                     pinViews[i].showOverlay = useOutline
+                    tiles[i].set(bmp, if (r != null) "Chosen ✓ – body found" else "Chosen – no body found, place the pins by hand")
                     built = null
                     busy = false
-                    status.text = (if (r != null) "Body found." else "No body detected – a template skeleton was placed.") +
-                        " Drag pins onto the joints (blue = person's left, pink = person's right). Pinch to zoom."
-                    setMode(Mode.values()[i])
+                    pinTab = i
+                    setStep(PHOTOS)
+                    status.text = if (r != null) "Body found in the ${viewNames[i].lowercase()} photo. Add more photos or tap Next."
+                        else "No body was detected in that photo, so a template skeleton was placed. You'll need to drag the pins onto the joints in the next step."
                 }
             } catch (e: Throwable) {
-                runOnUiThread { status.text = "Couldn't load photo: ${e.message}"; busy = false }
+                runOnUiThread { status.text = "Couldn't load that photo: ${e.message}"; busy = false }
             }
         }
     }
 
-    // ---- measurements ------------------------------------------------------------------------------
-
-    private val rowAdapter = object : BaseAdapter() {
-        override fun getCount() = rows.size
-        override fun getItem(position: Int) = rows[position]
-        override fun getItemId(position: Int) = position.toLong()
-        override fun getViewTypeCount() = 2
-        override fun getItemViewType(position: Int) = if (rows[position] is String) 0 else 1
-        override fun isEnabled(position: Int) = rows[position] is Int
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val dp = resources.displayMetrics.density
-            val tv = (convertView as? TextView) ?: TextView(this@BodyActivity).apply { setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt()) }
-            val row = rows[position]
-            if (row is String) {
-                tv.text = row; tv.setTextColor(Color.rgb(0, 230, 255)); tv.setTypeface(null, Typeface.BOLD); tv.setBackgroundColor(Color.rgb(30, 30, 36))
-                return tv
-            }
-            val r = results[row as Int]
-            tv.setTypeface(null, Typeface.NORMAL)
-            tv.setBackgroundColor(if (row == measureView.selected) Color.rgb(60, 54, 20) else Color.TRANSPARENT)
-            if (r.value == null) {
-                tv.setTextColor(Color.GRAY)
-                tv.text = "${r.def.name}: —\nUnavailable · ${r.note}"
-            } else {
-                tv.setTextColor(Color.WHITE)
-                val kind = if (r.status == MStatus.MEASURED) "Measured" else if (r.status == MStatus.RELATIVE) "Relative" else "Estimate"
-                tv.text = "${r.def.name}: ${MeasureFormat.value(r, inches)}\n$kind · ${r.reliability?.label}" + (if (r.note.isNotEmpty()) " · ${r.note}" else "")
-            }
-            return tv
-        }
-    }
-
-    private fun select(i: Int) {
-        val r = results.getOrNull(i)
-        measureView.label = if (r == null) "" else "${r.def.name}: ${MeasureFormat.value(r, inches)}"
-        measureView.selected = i
-        rowAdapter.notifyDataSetChanged()
-        if (r != null) status.text = "${r.def.name} – ${r.def.method} Limits: ${r.def.limitations}"
-    }
-
-    /** Exact UK bra size from two tape measurements typed in by the user. */
-    private fun tapeDialog() {
-        val unit = if (inches) "in" else "cm"
-        fun field(hint: String) = EditText(this).apply { this.hint = hint; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
-        val bust = field("Bust, around the fullest point ($unit)")
-        val under = field("Under-bust, snug around the ribcage ($unit)")
-        val out = TextView(this).apply { textSize = 18f; setPadding(0, 24, 0, 0) }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (20 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, 0)
-            addView(bust); addView(under); addView(out)
-        }
-        val watcher = object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) {
-                val k = if (inches) 2.54f else 1f
-                val b = bust.text.toString().toFloatOrNull()?.times(k)
-                val u = under.text.toString().toFloatOrNull()?.times(k)
-                out.text = when {
-                    b == null || u == null -> ""
-                    u !in 50f..160f || b !in 50f..200f -> "Check the numbers (units are $unit)"
-                    else -> "UK size: " + BraSize.uk(b, u)
-                }
-            }
-        }
-        bust.addTextChangedListener(watcher); under.addTextChangedListener(watcher)
-        android.app.AlertDialog.Builder(this).setTitle("Bra size from tape measurements").setView(box).setPositiveButton("Close", null).show()
-    }
-
-    private fun runMeasure() {
-        val fp = photos[0]
-        if (fp == null) { status.text = "Add a front photo first. A side photo adds depth, which circumferences need."; return }
-        if (busy) return
-        val height = heightField.text.toString().toFloatOrNull()?.takeIf { it in 50f..250f }
-        val frontIn = BodyFitter.ViewInput(BodyPins.View.FRONT, pinViews[0].points, fp.width, fp.height, masks[0])
-        val sp = photos[1]
-        val sideIn = sp?.let { BodyFitter.ViewInput(BodyPins.View.SIDE, pinViews[1].points, it.width, it.height, masks[1]) }
-        busy = true
-        status.text = "Measuring…"
-        worker.execute {
-            try {
-                val eng = MeasureEngine(frontIn, sideIn, height)
-                val res = eng.run()
-                val list = ArrayList<Any>()
-                var group = ""
-                for ((i, r) in res.withIndex()) { if (r.def.group != group) { group = r.def.group; list.add(group) }; list.add(i) }
-                runOnUiThread {
-                    busy = false
-                    results = res; rows = list; measureWarnings = eng.warnings; measuredHeight = height
-                    measureView.photos = arrayOf(fp, sp); measureView.results = res
-                    select(-1)
-                    val have = res.count { it.value != null }
-                    status.text = "$have of ${res.size} measurements available – tap a row or a line. ± is the likely error. " +
-                        "The clothed outline is what gets measured. Only measure adults who've agreed to it." +
-                        eng.warnings.joinToString("") { "\n• $it" }
-                }
-            } catch (e: Throwable) {
-                runOnUiThread { busy = false; status.text = "Measuring failed: ${e.message}" }
-            }
-        }
-    }
-
-    private fun exportMeasurements() {
-        val res = results
-        if (res.isEmpty()) { status.text = "Nothing to export yet."; return }
-        if (busy) return
-        busy = true
-        val warn = measureWarnings; val height = measuredHeight; val inch = inches
-        val now = Date()
-        val name = "measure_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now)
-        worker.execute {
-            val msg = try {
-                ObjExporter.save(this, "$name.json", "application/json") { it.write(MeasureFormat.json(res, warn, height, stamp).toByteArray()) }
-                ObjExporter.save(this, "$name.csv", "text/csv") { it.write(MeasureFormat.csv(res).toByteArray()) }
-                ObjExporter.save(this, "$name.pdf", "application/pdf") { MeasurePdf.write(it, res, warn, height, inch, stamp) }
-                "Saved $name.json, .csv and .pdf to Download/${ObjExporter.FOLDER}"
-            } catch (e: Throwable) { "Export failed: ${e.message}" }
-            runOnUiThread { busy = false; status.text = msg; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
-        }
-    }
-
-    private fun resetPins() {
-        val i = mode.ordinal
-        if (i > 2) return
-        detectedPins[i]?.let { pinViews[i].setPoints(it) }
-    }
+    // ---- 3D model ----------------------------------------------------------------------------------
 
     private fun ensureBuilt(done: (List<MeshPart>) -> Unit) {
         built?.let { done(it); return }
         val frontPhoto = photos[0]
         val t = template
-        if (frontPhoto == null || t == null) { status.text = "Add a front photo first."; return }
+        if (frontPhoto == null || t == null) { status.text = "Choose a front photo first."; return }
         if (busy) return
         val height = heightField.text.toString().toFloatOrNull()?.coerceIn(50f, 250f) ?: 175f
         val inputs = (0 until 3).map { i ->
@@ -388,7 +329,7 @@ class BodyActivity : ComponentActivity() {
         val headMesh = if (useHead) HeadStore.mesh else null
         val headTex = HeadStore.texture
         busy = true
-        status.text = "Fitting body and baking texture…"
+        status.text = "Building the model…"
         worker.execute {
             try {
                 val head = if (headMesh != null && headTex != null) BodyFitter.HeadInput(headMesh.positions, headMesh.tris) else null
@@ -401,13 +342,12 @@ class BodyActivity : ComponentActivity() {
                     built = parts
                     editBase = null; editState = null
                     busy = false
-                    val tris = parts.sumOf { it.tris.size / 3 }
-                    status.text = "$tris triangles, ${height.toInt()} cm tall" +
-                        (if (useHead && head == null) ". No FaceDroid head yet – build one on the face screen to use it." else "")
+                    status.text = "Drag to turn, pinch to zoom. Happy with it? Tap Save OBJ." +
+                        (if (useHead && head == null) " No head from the 3D head screen yet, so the built-in head is used." else "")
                     done(parts)
                 }
             } catch (e: Throwable) {
-                runOnUiThread { status.text = "Build failed: ${e.message}"; busy = false }
+                runOnUiThread { status.text = "Couldn't build the model: ${e.message}"; busy = false }
             }
         }
     }
@@ -423,7 +363,7 @@ class BodyActivity : ComponentActivity() {
             }
         }
         if (skinBase) {
-            // Plain skin everywhere (no clothes); only a template head keeps its photo pixels.
+            // Plain skin everywhere (no clothes); only a built-in head keeps its photo pixels.
             val tex = Baker.skinBase(2048, t.uv, res.tris, res.normals, skinColour(front))
             val headOnly = IntArray(res.triView.size) { i ->
                 if ((0 until 3).any { t.region[res.tris[i * 3 + it]].toInt() == BodyTemplate.HEAD }) res.triView[i] else -1
@@ -436,7 +376,7 @@ class BodyActivity : ComponentActivity() {
         return Baker.fillGaps(tex)
     }
 
-    /** Skin tone from the cheeks: the FaceDroid head's texture if it's in use, else the front photo. */
+    /** Skin tone from the cheeks: the 3D head's texture if it's in use, else the front photo. */
     private fun skinColour(front: Bitmap): Int {
         val samples = ArrayList<Int>()
         val hm = if (useHead) HeadStore.mesh else null
@@ -457,13 +397,15 @@ class BodyActivity : ComponentActivity() {
         return Color.rgb(samples.sumOf { Color.red(it) } / samples.size, samples.sumOf { Color.green(it) } / samples.size, samples.sumOf { Color.blue(it) } / samples.size)
     }
 
-    private fun refreshPreview() {
+    private fun openEditor() {
         ensureBuilt { parts ->
-            when (mode) {
-                Mode.VIEW3D -> glView.setModel(RenderModel.fromParts(parts))
-                Mode.UV -> uvView.setImageBitmap(parts.first().texture)
-                else -> {}
-            }
+            val t = template
+            val base = editBase ?: parts
+            editBase = base
+            EditStore.parts = base
+            EditStore.state = editState
+            EditStore.roles = base.map { p -> if (p.name == "body") t?.region else ByteArray(p.positions.size / 3) { EditModel.ROLE_HEAD_PART } }
+            startActivity(Intent(this, EditorActivity::class.java))
         }
     }
 
@@ -473,14 +415,139 @@ class BodyActivity : ComponentActivity() {
             status.text = "Saving…"
             val name = "body_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             worker.execute {
-                val msg = try {
-                    lastExport = ObjExporter.export(this, parts, name)
-                    "Saved $name.obj, .mtl and textures to Download/${ObjExporter.FOLDER}"
-                } catch (e: Throwable) { "Export failed: ${e.message}" }
-                runOnUiThread { busy = false; status.text = msg; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+                val ok = try { lastExport = ObjExporter.export(this, parts, name); true } catch (e: Throwable) { false }
+                val msg = if (ok) "Saved $name.obj with its textures to Download/${ObjExporter.FOLDER}" else "Couldn't save the file."
+                runOnUiThread {
+                    busy = false; status.text = msg
+                    if (ok) viewerButton.visibility = View.VISIBLE
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
+
+    // ---- measurements ------------------------------------------------------------------------------
+
+    private val rowAdapter = object : BaseAdapter() {
+        override fun getCount() = rows.size
+        override fun getItem(position: Int) = rows[position]
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getViewTypeCount() = 2
+        override fun getItemViewType(position: Int) = if (rows[position] is String) 0 else 1
+        override fun isEnabled(position: Int) = rows[position] is Int
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val dp = resources.displayMetrics.density
+            val tv = (convertView as? TextView) ?: TextView(this@BodyActivity).apply { setPadding((16 * dp).toInt(), (7 * dp).toInt(), (16 * dp).toInt(), (7 * dp).toInt()) }
+            val row = rows[position]
+            if (row is String) {
+                tv.text = row; tv.setTextColor(Ui.ACCENT); tv.setTypeface(null, Typeface.BOLD); tv.setBackgroundColor(Ui.SURFACE)
+                return tv
+            }
+            val r = results[row as Int]
+            tv.setTypeface(null, Typeface.NORMAL)
+            tv.setBackgroundColor(if (row == measureView.selected) Ui.ACCENT_DIM else Color.TRANSPARENT)
+            if (r.value == null) {
+                tv.setTextColor(Color.GRAY)
+                tv.text = "${r.def.name}: —\nUnavailable · ${r.note}"
+            } else {
+                tv.setTextColor(Color.WHITE)
+                val kind = if (r.status == MStatus.MEASURED) "Measured" else if (r.status == MStatus.RELATIVE) "Relative" else "Estimate"
+                tv.text = "${r.def.name}: ${MeasureFormat.value(r, inches)}\n$kind · ${r.reliability?.label}" + (if (r.note.isNotEmpty()) " · ${r.note}" else "")
+            }
+            return tv
+        }
+    }
+
+    private fun select(i: Int) {
+        val r = results.getOrNull(i)
+        measureView.label = if (r == null) "" else "${r.def.name}: ${MeasureFormat.value(r, inches)}"
+        measureView.selected = i
+        rowAdapter.notifyDataSetChanged()
+        if (r != null) status.text = "${r.def.name} – ${r.def.method} Limits: ${r.def.limitations}"
+    }
+
+    private fun runMeasure() {
+        val fp = photos[0] ?: return
+        if (busy) return
+        val height = heightField.text.toString().toFloatOrNull()?.takeIf { it in 50f..250f }
+        val frontIn = BodyFitter.ViewInput(BodyPins.View.FRONT, pinViews[0].points, fp.width, fp.height, masks[0])
+        val sp = photos[1]
+        val sideIn = sp?.let { BodyFitter.ViewInput(BodyPins.View.SIDE, pinViews[1].points, it.width, it.height, masks[1]) }
+        busy = true
+        worker.execute {
+            try {
+                val eng = MeasureEngine(frontIn, sideIn, height)
+                val res = eng.run()
+                val list = ArrayList<Any>()
+                var group = ""
+                for ((i, r) in res.withIndex()) { if (r.def.group != group) { group = r.def.group; list.add(group) }; list.add(i) }
+                runOnUiThread {
+                    busy = false
+                    results = res; rows = list; measureWarnings = eng.warnings; measuredHeight = height
+                    measureView.photos = arrayOf(fp, sp); measureView.results = res
+                    select(-1)
+                    val have = res.count { it.value != null }
+                    status.text = "$have of ${res.size} measurements found. Tap a row or a line to see it. ± is the likely error; clothes count as body." +
+                        eng.warnings.joinToString("") { "\n• $it" }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { busy = false; status.text = "Couldn't measure: ${e.message}" }
+            }
+        }
+    }
+
+    private fun exportMeasurements() {
+        val res = results
+        if (res.isEmpty()) { status.text = "Nothing to save yet."; return }
+        if (busy) return
+        busy = true
+        val warn = measureWarnings; val height = measuredHeight; val inch = inches
+        val now = Date()
+        val name = "measure_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now)
+        worker.execute {
+            val msg = try {
+                ObjExporter.save(this, "$name.json", "application/json") { it.write(MeasureFormat.json(res, warn, height, stamp).toByteArray()) }
+                ObjExporter.save(this, "$name.csv", "text/csv") { it.write(MeasureFormat.csv(res).toByteArray()) }
+                ObjExporter.save(this, "$name.pdf", "application/pdf") { MeasurePdf.write(it, res, warn, height, inch, stamp) }
+                "Saved $name as PDF, CSV and JSON to Download/${ObjExporter.FOLDER}"
+            } catch (e: Throwable) { "Couldn't save the report." }
+            runOnUiThread { busy = false; status.text = msg; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    /** Exact UK bra size from two tape measurements typed in by the user. */
+    private fun tapeDialog() {
+        val unit = if (inches) "in" else "cm"
+        fun field(hint: String) = EditText(this).apply { this.hint = hint; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+        val bust = field("Bust, around the fullest point ($unit)")
+        val under = field("Under-bust, snug around the ribcage ($unit)")
+        val out = TextView(this).apply { textSize = 18f; setPadding(0, 24, 0, 0) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = Ui.dp(context, 20f)
+            setPadding(pad, pad / 2, pad, 0)
+            addView(bust); addView(under); addView(out)
+        }
+        val watcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val k = if (inches) 2.54f else 1f
+                val b = bust.text.toString().toFloatOrNull()?.times(k)
+                val u = under.text.toString().toFloatOrNull()?.times(k)
+                out.text = when {
+                    b == null || u == null -> ""
+                    u !in 50f..160f || b !in 50f..200f -> "Check the numbers (units are $unit)"
+                    else -> "UK size: " + BraSize.uk(b, u)
+                }
+            }
+        }
+        bust.addTextChangedListener(watcher); under.addTextChangedListener(watcher)
+        android.app.AlertDialog.Builder(this).setTitle("Bra size from a tape measure").setView(box).setPositiveButton("Close", null).show()
+    }
+
+    // ---- lifecycle ---------------------------------------------------------------------------------
 
     override fun onResume() {
         super.onResume()
@@ -489,11 +556,13 @@ class BodyActivity : ComponentActivity() {
         if (r != null && r.base === editBase) {
             EditStore.result = null
             built = r.edited; editState = r.state
-            status.text = "Showing your edited model – 3D, UV map and Export all use it. Changing pins, photos, height or head rebuilds from the photos and drops the edits."
-            if (mode == Mode.VIEW3D || mode == Mode.UV) refreshPreview()
+            if (step == MODEL) showModel()
+            status.text = "Showing your edited shape. Save OBJ uses it. Changing pins, photos, height, head or skin rebuilds from the photos and drops the edits."
         }
     }
+
     override fun onPause() { glView.onPause(); super.onPause() }
+
     override fun onDestroy() {
         worker.execute { detector?.close() }
         worker.shutdown()

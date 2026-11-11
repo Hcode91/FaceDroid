@@ -111,27 +111,25 @@ class EditorActivity : ComponentActivity() {
         val dp = resources.displayMetrics.density
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(18, 18, 22)) }
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun LinearLayout.button(label: String, onClick: () -> Unit) = Button(this@EditorActivity).apply {
-            text = label; isAllCaps = false; setOnClickListener { onClick() }
-            this@button.addView(this)
-        }
+        fun LinearLayout.button(label: String, onClick: () -> Unit) = Ui.secondary(this@EditorActivity, label, onClick).also { this@button.addView(it) }
+        bar.addView(Ui.label(this, "Tool"))
         slidersButton = bar.button("Sliders") { setBrushing(false) }
         brushButton = bar.button("Brush") { setBrushing(true) }
-        bar.button("Undo") { if (model.undo()) refresh() else status.text = "Nothing to undo (undo covers brush strokes; sliders can just be moved back)." }
+        bar.addView(Ui.label(this, "  "))
+        bar.button("Undo stroke") { if (model.undo()) refresh() else status.text = "Nothing to undo (undo covers brush strokes; sliders can just be moved back)." }
         bar.button("Reset all") {
             model.resetAll()
             for ((_, sb) in sliderBars) sb.progress = 60
             refresh()
         }
         bar.button("Reset view") { glView.resetView() }
-        bar.button("Save as OBJ") { save() }
-        bar.button("OBJ viewer") {
+        bar.button("Open saved models") {
             startActivity(Intent(this, ViewerActivity::class.java).apply {
                 if (lastExport.isNotEmpty()) putParcelableArrayListExtra(ViewerActivity.EXTRA_URIS, ArrayList(lastExport))
             })
         }
-        bar.button("Back") { finish() }
-        root.addView(HorizontalScrollView(this).apply { addView(bar) })
+        root.addView(Ui.titleBar(this, "Edit shape"))
+        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(Ui.dp(context, 8f), 0, Ui.dp(context, 8f), 0); addView(bar) })
 
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY)
@@ -177,7 +175,7 @@ class EditorActivity : ComponentActivity() {
         val brush = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding((12 * dp).toInt(), 0, (12 * dp).toInt(), (6 * dp).toInt()) }
         val modes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((i, name) in listOf("Push out", "Pull in", "Smooth").withIndex()) brushModeButtons.add(modes.button(name) { brushMode = i; updateButtons() })
-        mirrorButton = modes.button("Mirror: off") { mirror = !mirror; updateButtons() }
+        mirrorButton = modes.button("Mirror left/right") { mirror = !mirror; updateButtons() }
         brush.addView(HorizontalScrollView(this).apply { addView(modes) })
         fun brushSlider(label: String, start: Int, onChange: (Int) -> Unit) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -197,14 +195,19 @@ class EditorActivity : ComponentActivity() {
         brushSlider("Strength", 50) { brushStrength = it / 100f }
         brushPane = brush
         root.addView(brushPane)
+        val bottom = Ui.row(this).apply { setPadding(Ui.dp(context, 8f), Ui.dp(context, 2f), Ui.dp(context, 8f), Ui.dp(context, 8f)) }
+        bottom.addView(Ui.secondary(this, "‹ Done (keep edits)") { finish() })
+        bottom.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        bottom.addView(Ui.primary(this, "Save as new OBJ") { save() })
+        root.addView(bottom)
         setContentView(root)
     }
 
     private fun updateButtons() {
-        slidersButton.alpha = if (brushing) 0.6f else 1f
-        brushButton.alpha = if (brushing) 1f else 0.6f
-        for ((i, b) in brushModeButtons.withIndex()) b.alpha = if (i == brushMode) 1f else 0.6f
-        mirrorButton.text = if (mirror) "Mirror: on" else "Mirror: off"
+        Ui.setChecked(slidersButton, !brushing)
+        Ui.setChecked(brushButton, brushing)
+        for ((i, b) in brushModeButtons.withIndex()) Ui.setChecked(b, i == brushMode)
+        Ui.setChecked(mirrorButton, mirror)
     }
 
     private fun setBrushing(on: Boolean) {
@@ -213,7 +216,7 @@ class EditorActivity : ComponentActivity() {
         sliderPane.visibility = if (on) View.GONE else View.VISIBLE
         brushPane.visibility = if (on) View.VISIBLE else View.GONE
         status.text = if (on) "Brush: drag one finger over the model to sculpt. Two fingers turn and zoom. Undo steps back one stroke."
-            else "Sliders: 100% is unchanged. Drag the model to turn it, pinch to zoom. Texture and UVs are kept. Back keeps your edits."
+            else "Sliders: 100% is unchanged. Drag the model to turn it, pinch to zoom. The texture stays as it is."
         updateButtons()
     }
 

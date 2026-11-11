@@ -37,23 +37,21 @@ class ViewerActivity : ComponentActivity() {
         val dp = resources.displayMetrics.density
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(18, 18, 22)) }
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun button(label: String, onClick: () -> Unit) = bar.addView(Button(this).apply {
-            text = label; isAllCaps = false; setOnClickListener { onClick() }
-        })
-        button("Open files") { openFiles.launch(arrayOf("*/*")) }
-        button("My exports") { showExports() }
+        fun button(label: String, onClick: () -> Unit) = bar.addView(Ui.secondary(this, label, onClick))
+        button("Open a file") { openFiles.launch(arrayOf("*/*")) }
+        button("My saved models") { showExports() }
         button("Reset view") { glView.resetView() }
-        button("Edit") {
+        button("Edit shape") {
             val l = loaded
             if (l == null) status.text = "Open a model first."
             else { EditStore.parts = l; EditStore.roles = null; EditStore.state = editState; startActivity(Intent(this, EditorActivity::class.java)) }
         }
-        button("Back") { finish() }
-        root.addView(HorizontalScrollView(this).apply { addView(bar) })
+        root.addView(Ui.titleBar(this, "Open or edit a model"))
+        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(Ui.dp(context, 8f), 0, Ui.dp(context, 8f), 0); addView(bar) })
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY)
             setPadding((12 * dp).toInt(), (2 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
-            text = "Open an .obj – select its .png/.jpg texture at the same time to see it textured."
+            text = "Tap “My saved models” for things made in this app, or “Open a file” for any .obj – select its texture image (and .mtl) at the same time to see it textured."
         }
         root.addView(status)
         glView = FaceGLView(this)
@@ -137,9 +135,9 @@ class ViewerActivity : ComponentActivity() {
             }
             val objs = files.keys.filter { it.endsWith(".obj") }.sortedDescending()
             runOnUiThread {
-                if (objs.isEmpty()) { status.text = "No exports yet – use Export on the main screen."; return@runOnUiThread }
+                if (objs.isEmpty()) { status.text = "Nothing saved yet – make a head or a body and tap Save OBJ."; return@runOnUiThread }
                 AlertDialog.Builder(this)
-                    .setTitle("FaceDroid exports")
+                    .setTitle("My saved models")
                     .setItems(objs.toTypedArray()) { _, i ->
                         val base = objs[i].removeSuffix(".obj")
                         load(files.filterKeys { it == objs[i] || it.startsWith(base + "_") || it == "$base.png" || it == "$base.mtl" }.values.toList())
